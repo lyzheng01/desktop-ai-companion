@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live2D Character - Kei</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        .container {
+            text-align: center;
+            color: white;
+        }
+
+        #canvas {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        .controls {
+            margin-top: 30px;
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 12px 24px;
+            font-size: 14px;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            backdrop-filter: blur(10px);
+            transition: all 0.3s ease;
+        }
+
+        button:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        h1 {
+            margin-bottom: 20px;
+            font-weight: 300;
+            letter-spacing: 2px;
+        }
+
+        .info {
+            margin-top: 20px;
+            font-size: 12px;
+            opacity: 0.7;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Live2D Character - Kei</h1>
+        <canvas id="canvas" width="600" height="800"></canvas>
+
+        <div class="controls">
+            <button onclick="playMotion('idle')">Idle</button>
+            <button onclick="playMotion('tap_head')">Tap Head</button>
+            <button onclick="playMotion('tap_body')">Tap Body</button>
+            <button onclick="playMotion('shake')">Shake</button>
+            <button onclick="playMotion('flick_head')">Flick Head</button>
+            <button onclick="playMotion('flick_body')">Flick Body</button>
+        </div>
+
+        <p class="info">Click on the character to interact</p>
+    </div>
+
+    <!-- Load PixiJS -->
+    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/gh/dylanNew/live2d/webgl/Live2D/lib/live2d.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@7.x/dist/pixi.min.js"></script>
+
+    <script>
+        // Live2D 模型加载
+        let app;
+        let model;
+        let currentModel = null;
+        let motionManager = null;
+
+        // 模型文件路径
+        const MODEL_PATH = '../kei_en/kei_basic_free/runtime/kei_basic_free.model3.json';
+
+        async function init() {
+            // 创建 PixiJS 应用
+            app = new PIXI.Application({
+                view: document.getElementById('canvas'),
+                autoStart: true,
+                backgroundAlpha: 0,
+                transparent: true,
+            });
+
+            // 加载 Live2D 模型
+            try {
+                const response = await fetch(MODEL_PATH);
+                const modelSettings = await response.json();
+
+                console.log('Model loaded:', modelSettings);
+
+                // 创建容器
+                const container = new PIXI.Container();
+                app.stage.addChild(container);
+
+                // 设置模型位置
+                container.x = app.screen.width / 2;
+                container.y = app.screen.height / 2;
+                container.scale.set(1.5);
+
+                // 加载纹理
+                const texturePath = MODEL_PATH.replace('/kei_basic_free.model3.json', '/kei_basic_free.2048/texture_00.png');
+                const texture = await PIXI.Assets.load(texturePath);
+
+                // 创建精灵
+                const sprite = new PIXI.Sprite(texture);
+                sprite.anchor.set(0.5);
+                container.addChild(sprite);
+
+                // 添加简单的交互
+                sprite.eventMode = 'static';
+                sprite.cursor = 'pointer';
+
+                sprite.on('pointerdown', () => {
+                    console.log('Character clicked!');
+                    playMotion('tap_body');
+                });
+
+                console.log('Live2D model initialized');
+
+            } catch (error) {
+                console.error('Error loading model:', error);
+            }
+        }
+
+        function playMotion(motionName) {
+            console.log('Playing motion:', motionName);
+            // 这里可以添加具体的动作播放逻辑
+        }
+
+        // 初始化
+        window.onload = init;
+    </script>
+</body>
+</html>

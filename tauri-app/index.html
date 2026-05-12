@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Desktop AI Companion</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            overflow: hidden;
+            background: transparent;
+        }
+
+        #app {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-end;
+        }
+
+        /* Live2D 角色容器 */
+        #character-container {
+            position: fixed;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 400px;
+            height: 600px;
+            pointer-events: auto;
+        }
+
+        #character-hit-area {
+            position: absolute;
+            inset: 0;
+            z-index: 2;
+            background: transparent;
+            cursor: grabbing;
+        }
+
+        #character-stage {
+            position: absolute;
+            inset: 0;
+            z-index: 1;
+            transform-origin: 50% 80%;
+            transition: transform 120ms linear;
+            will-change: transform;
+        }
+
+        #character-canvas {
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+            pointer-events: none;
+        }
+
+        /* 聊天窗口 */
+        #chat-window {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 380px;
+            height: 500px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            z-index: 1000;
+        }
+
+        #chat-window.visible {
+            display: flex;
+        }
+
+        #settings-panel {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 320px;
+            max-height: calc(100vh - 40px);
+            background: rgba(255,255,255,0.96);
+            border-radius: 16px;
+            box-shadow: 0 10px 32px rgba(0,0,0,0.18);
+            backdrop-filter: blur(12px);
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            z-index: 1100;
+        }
+
+        #settings-panel.visible {
+            display: flex;
+        }
+
+        .settings-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            cursor: grab;
+        }
+
+        .settings-header:active {
+            cursor: grabbing;
+        }
+
+        .settings-header h3 {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .settings-close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            width: 24px;
+            height: 24px;
+        }
+
+        .settings-body {
+            padding: 16px;
+            display: grid;
+            gap: 12px;
+            overflow-y: auto;
+        }
+
+        .settings-item {
+            padding: 12px 14px;
+            background: #f7f8fc;
+            border-radius: 12px;
+            color: #333;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .settings-item strong {
+            display: block;
+            margin-bottom: 4px;
+            font-size: 14px;
+        }
+
+        .settings-item label {
+            display: block;
+            margin-top: 10px;
+            margin-bottom: 6px;
+            font-size: 12px;
+            color: #667085;
+        }
+
+        .settings-item input,
+        .settings-item select {
+            width: 100%;
+            border: 1px solid #d8def5;
+            border-radius: 10px;
+            background: white;
+            padding: 10px 12px;
+            font-size: 13px;
+            color: #333;
+        }
+
+        #personality-select {
+            min-height: 132px;
+        }
+
+        .settings-scale-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        #scale-slider {
+            flex: 1;
+        }
+
+        #scale-value {
+            min-width: 48px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .settings-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .settings-actions button {
+            flex: 1;
+            border: none;
+            border-radius: 10px;
+            background: #e9edff;
+            color: #4452b8;
+            padding: 10px 12px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .chat-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: grab;
+        }
+
+        .chat-header:active {
+            cursor: grabbing;
+        }
+
+        .chat-header h3 {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .chat-header .close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 12px;
+            overflow-y: auto;
+            background: #f5f7fa;
+        }
+
+        .message {
+            margin-bottom: 12px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .message.user {
+            align-items: flex-end;
+        }
+
+        .message.assistant {
+            align-items: flex-start;
+        }
+
+        .message-content {
+            max-width: 80%;
+            padding: 10px 14px;
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .message.assistant .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+        }
+
+        .chat-input-area {
+            padding: 12px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 8px;
+        }
+
+        #chat-input {
+            flex: 1;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 14px;
+            outline: none;
+            resize: none;
+        }
+
+        #chat-input:focus {
+            border-color: #667eea;
+        }
+
+        #send-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        #send-btn:hover {
+            opacity: 0.9;
+        }
+
+        /* 右键菜单 */
+        #context-menu {
+            position: fixed;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 8px 0;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            display: none;
+            z-index: 2000;
+            min-width: 160px;
+        }
+
+        #context-menu.visible {
+            display: block;
+        }
+
+        #context-menu button {
+            width: 100%;
+            padding: 10px 16px;
+            border: none;
+            background: none;
+            text-align: left;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        #context-menu button:hover {
+            background: #f0f0f0;
+        }
+
+        #context-menu .separator {
+            height: 1px;
+            background: #e0e0e0;
+            margin: 6px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="app">
+        <!-- Live2D 角色容器 -->
+        <div id="character-container">
+            <div id="character-hit-area"></div>
+            <div id="character-stage">
+                <div id="character-canvas"></div>
+            </div>
+        </div>
+
+        <!-- 聊天窗口 -->
+        <div id="chat-window">
+            <div class="chat-header">
+                <h3 id="chat-title">小艾 AI</h3>
+                <button class="close-btn">×</button>
+            </div>
+            <div class="chat-messages" id="chat-messages"></div>
+            <div class="chat-input-area">
+                <textarea id="chat-input" placeholder="输入消息... (Shift+Enter 换行)" rows="2"></textarea>
+                <button id="send-btn">发送</button>
+            </div>
+        </div>
+
+        <div id="settings-panel">
+            <div class="settings-header">
+                <h3>设置</h3>
+                <button class="settings-close-btn">×</button>
+            </div>
+            <div class="settings-body">
+                <div class="settings-item">
+                    <strong>陪伴设定</strong>
+                    当前模型：<span id="current-character-label">Kei</span>
+
+                    <label for="character-name-input">虚拟人名字</label>
+                    <input id="character-name-input" type="text" value="小艾" maxlength="20">
+
+                    <label for="user-display-name-input">虚拟人如何称呼你</label>
+                    <input id="user-display-name-input" type="text" value="你" maxlength="20">
+
+                    <label for="chat-model-select">对话模型</label>
+                    <select id="chat-model-select">
+                        <option value="gpt">GPT</option>
+                        <option value="deepseek">DeepSeek</option>
+                    </select>
+
+                    <label for="personality-select">性格（可多选）</label>
+                    <select id="personality-select" multiple>
+                        <option value="温柔">温柔</option>
+                        <option value="安静">安静</option>
+                        <option value="元气">元气</option>
+                        <option value="理性">理性</option>
+                        <option value="治愈">治愈</option>
+                    </select>
+
+                    <label for="interaction-mode-select">你希望它更像什么？</label>
+                    <select id="interaction-mode-select">
+                        <option value="work">工作搭子</option>
+                        <option value="daily">日常陪伴</option>
+                        <option value="quiet">少打扰助手</option>
+                        <option value="sleep">睡前聊天伙伴</option>
+                    </select>
+
+                    <label for="proactive-mode-select">你希望它平时主动吗？</label>
+                    <select id="proactive-mode-select">
+                        <option value="quiet">尽量安静，只有我叫它时再回应</option>
+                        <option value="greet">偶尔打个招呼</option>
+                        <option value="remind">可以主动提醒我休息/睡觉</option>
+                    </select>
+                </div>
+                <div class="settings-item">
+                    <strong>缩放</strong>
+                    <div class="settings-scale-row">
+                        <input id="scale-slider" type="range" min="0.01" max="1.4" step="0.01" value="1">
+                        <span id="scale-value">100%</span>
+                    </div>
+                    <div class="settings-actions">
+                        <button id="scale-decrease-btn">缩小</button>
+                        <button id="scale-reset-btn">重置</button>
+                        <button id="scale-increase-btn">放大</button>
+                    </div>
+                </div>
+                <div class="settings-item">
+                    <strong>显示</strong>
+                    默认会自动完整展示角色，你可以按需要再放大或缩小。
+                </div>
+            </div>
+        </div>
+
+        <!-- 右键菜单 -->
+        <div id="context-menu">
+            <button data-character="kei">📦 Kei</button>
+            <button data-character="chitose">🌸 Chitose</button>
+            <button data-character="hiyori">☀️ Hiyori</button>
+            <div class="separator"></div>
+            <button data-action="hide">🙈 隐藏</button>
+            <button data-action="settings">⚙️ 设置</button>
+            <div class="separator"></div>
+            <button data-action="quit">❌ 退出</button>
+        </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
