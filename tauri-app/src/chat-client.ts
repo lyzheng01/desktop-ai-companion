@@ -14,6 +14,14 @@ export interface ChatConfig {
     model?: string;
 }
 
+export interface MemoryItem {
+    id: number;
+    content: string;
+    category: string;
+    importance: number;
+    created_at: string;
+}
+
 export class ChatClient {
     private messages: ChatMessage[] = [];
     private config: ChatConfig;
@@ -79,6 +87,21 @@ export class ChatClient {
         return this.getHistory(limit);
     }
 
+    public async loadMemory(): Promise<MemoryItem[]> {
+        const response = await fetch(this.getEndpointUrl('memory'));
+        if (!response.ok) {
+            throw new Error(`Memory request failed: ${response.status}`);
+        }
+        return await response.json() as MemoryItem[];
+    }
+
+    public async deleteMemory(memoryId: number): Promise<void> {
+        const response = await fetch(`${this.getEndpointUrl('memory')}/${memoryId}`, { method: 'DELETE' });
+        if (!response.ok) {
+            throw new Error(`Delete memory failed: ${response.status}`);
+        }
+    }
+
     // 调用 AI 接口
     private async callAI(userMessage: string): Promise<ChatMessage> {
         // 方案 1: 调用本地 Python 后端
@@ -130,7 +153,7 @@ export class ChatClient {
         return responses[Math.floor(Math.random() * responses.length)];
     }
 
-    private getEndpointUrl(kind: 'chat' | 'history'): string {
+    private getEndpointUrl(kind: 'chat' | 'history' | 'memory'): string {
         const endpoint = new URL(this.config.apiEndpoint || 'http://localhost:8080/chat');
         const pathSegments = endpoint.pathname.split('/').filter(Boolean);
 

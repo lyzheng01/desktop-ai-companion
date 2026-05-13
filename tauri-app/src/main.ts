@@ -7,7 +7,7 @@ import * as PIXI from 'pixi.js';
 import { invoke } from '@tauri-apps/api/core';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { ChatClient, type ChatMessage } from './chat-client';
+import { ChatClient, type ChatMessage, type MemoryItem } from './chat-client';
 import { HIYORI_ACTIONS, HIYORI_ACTION_KEYS, type HiyoriAction } from './hiyori-actions';
 
 // ============== 全局状态 ==============
@@ -124,6 +124,10 @@ const live2dDebugState = {
     talkingActive: false,
     hiyoriActions: null as Record<HiyoriAction, string> | null,
 };
+
+function logProductEvent(name: string, payload: Record<string, unknown> = {}) {
+    console.log(`PRODUCT_EVENT ${name} ${JSON.stringify(payload)}`);
+}
 
 function setCompanionState(state: CompanionState) {
     document.body.dataset.companionState = state;
@@ -1243,6 +1247,7 @@ async function openChat() {
         chatWindow.classList.add('visible');
         chatWindowVisible = true;
     }
+    logProductEvent('chat_opened', { character: currentCharacter });
 }
 
 function closeChat() {
@@ -1261,6 +1266,8 @@ function openSettingsPanel() {
     updateCharacterLabel();
     updateScaleControls();
     syncCompanionSettingsForm();
+    logProductEvent('settings_opened', { character: currentCharacter });
+    void refreshMemoryList();
 }
 
 function closeSettingsPanel() {
@@ -1331,6 +1338,7 @@ async function sendMessage() {
 
     setCompanionState('listening');
     addMessage('user', text);
+    logProductEvent('message_sent', { length: text.length, character: currentCharacter });
     void triggerCharacterAttention();
 
     try {
@@ -1376,6 +1384,7 @@ async function ensureChatHistoryLoaded() {
         const history = await chatClient.loadHistory();
         renderChatHistory(history);
         chatHistoryLoaded = true;
+        logProductEvent('history_restored', { count: history.length });
     })().catch((error) => {
         chatHistoryLoaded = false;
         throw error;
@@ -1392,6 +1401,45 @@ function renderChatHistory(messages: ChatMessage[]) {
 
     messagesContainer.innerHTML = '';
     messages.forEach((message) => addMessage(message.role, message.content));
+}
+
+function renderMemoryList(memories: MemoryItem[]) {
+    const container = document.getElementById('memory-list');
+    if (!container) return;
+
+    container.innerHTML = '';
+
+    if (memories.length === 0) {
+        container.textContent = '暂时还没有记住新的内容。';
+        return;
+    }
+
+    memories.forEach((memory) => {
+        const row = document.createElement('div');
+        row.className = 'memory-row';
+
+        const text = document.createElement('span');
+        text.textContent = memory.content;
+
+        const button = document.createElement('button');
+        button.dataset.memoryId = String(memory.id);
+        button.textContent = '删除';
+        button.addEventListener('click', async () => {
+            await chatClient.deleteMemory(memory.id);
+            logProductEvent('memory_deleted', { id: memory.id });
+            await refreshMemoryList();
+        });
+
+        row.appendChild(text);
+        row.appendChild(button);
+        container.appendChild(row);
+    });
+}
+
+async function refreshMemoryList() {
+    const memories = await chatClient.loadMemory();
+    logProductEvent('memory_viewed', { count: memories.length });
+    renderMemoryList(memories);
 }
 
 // ============== 右键菜单 ==============
@@ -1454,12 +1502,9 @@ function bindContextMenuActions() {
 
 function toggleCharacterVisibility() {
     hideContextMenu();
-    const container = document.getElementById('character-container');
-    if (container) {
-        characterHidden = !characterHidden;
-        container.style.display = characterHidden ? 'none' : 'block';
-        updateHideMenuLabel();
-    }
+    characterHidden = true;
+    updateHideMenuLabel();
+    invoke('hide_main_window');
 }
 
 function showSettings() {

@@ -2,8 +2,11 @@
 Desktop AI Companion - Python 后端服务
 提供 AI 对话接口和数据库访问
 """
+import os
 import sys
 from pathlib import Path
+
+import httpx
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -16,7 +19,7 @@ from typing import List
 import uvicorn
 
 from app.config import AppConfig, TIME_PATTERN, get_config, save_config as persist_config
-from app.db import clear_messages, get_messages, save_message
+from app.db import clear_messages, delete_memory, get_memories, get_messages, save_memory, save_message
 
 # ============== 数据模型 ==============
 
@@ -30,6 +33,12 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     content: str
+
+
+class MemoryCreateRequest(BaseModel):
+    content: str
+    category: str = "preference"
+    importance: int = 1
 
 class Config(BaseModel):
     user_nickname: str = "小伙伴"
@@ -129,9 +138,12 @@ async def chat(request: ChatRequest):
     """
     save_message("user", request.message)
 
-    # TODO: 调用真实 AI 接口 (硅基流动/DeepSeek 等)
-    # 暂时返回占位回复
-    response_content = generate_fallback_response(request.message)
+    current = get_config()
+    response_content = shape_companion_reply(
+        request.message,
+        generate_chat_response(request.message, request.context, current),
+        current,
+    )
 
     save_message("assistant", response_content)
 
@@ -162,7 +174,82 @@ async def clear_history():
     clear_messages()
     return {"status": "ok"}
 
+
+@app.get("/memory")
+async def list_memory():
+    """获取轻量记忆"""
+    return get_memories()
+
+
+@app.post("/memory")
+async def create_memory(payload: MemoryCreateRequest):
+    """创建轻量记忆"""
+    save_memory(payload.content, payload.category, payload.importance)
+    return {"status": "ok"}
+
+
+@app.delete("/memory/{memory_id}")
+async def remove_memory(memory_id: int):
+    """删除轻量记忆"""
+    delete_memory(memory_id)
+    return {"status": "ok"}
+
 # ============== 占位回复生成 ==============
+
+def shape_companion_reply(message: str, raw_reply: str, config: AppConfig) -> str:
+    user_name = config.user_display_name.strip() or config.user_nickname.strip() or "你"
+    companion_name = config.character_name.strip() or "小艾"
+
+    if any(word in message for word in ["累", "困", "烦", "难受", "压力"]):
+        return f"{user_name}，辛苦啦。{companion_name}在这儿陪你一下。{raw_reply}"
+
+    return f"{user_name}，{raw_reply}"
+
+
+def generate_chat_response(message: str, context: list[ChatMessage], config: AppConfig) -> str:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    base_url = os.getenv("OPENAI_BASE_URL", "https://api.hanbbq.top/v1").rstrip("/")
+    model = os.getenv("OPENAI_MODEL", "gpt-5.4").strip()
+
+    if not api_key:
+        return generate_fallback_response(message)
+
+    memories = get_memories()[:5]
+    memory_block = "\n".join(f"- {item['content']}" for item in memories)
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "你是一个住在桌面上的 AI 小伙伴。"
+                    "回复简短、温柔、有一点陪伴感，不要像客服，不要长篇大论。"
+                    "\n你已知的用户信息：\n"
+                    f"{memory_block or '- 暂无额外记忆'}"
+                ),
+            },
+            *[
+                {"role": item.role, "content": item.content}
+                for item in context[-8:]
+            ],
+            {"role": "user", "content": message},
+        ],
+        "temperature": 0.8,
+    }
+
+    try:
+        response = httpx.post(
+            f"{base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=payload,
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+        return data["choices"][0]["message"]["content"].strip()
+    except Exception:
+        return generate_fallback_response(message)
 
 def generate_fallback_response(message: str) -> str:
     """生成占位回复 (后续替换为真实 AI)"""
