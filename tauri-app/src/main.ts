@@ -5,7 +5,10 @@
 
 import * as PIXI from 'pixi.js';
 import { invoke } from '@tauri-apps/api/core';
+import { PhysicalPosition } from '@tauri-apps/api/dpi';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ChatClient } from './chat-client';
+import { HIYORI_ACTIONS, HIYORI_ACTION_KEYS, type HiyoriAction } from './hiyori-actions';
 
 // ============== 全局状态 ==============
 
@@ -33,7 +36,7 @@ type CharacterBehavior = {
 };
 
 type CharacterRegion = 'face' | 'chest' | 'arms' | 'belly' | 'legs';
-type HiyoriAction = 'nod' | 'shake' | 'chinRest' | 'wave' | 'reject' | 'crouch';
+type HiyoriActionHandler = () => void;
 
 let app: PIXI.Application;
 let currentModel: any = null;
@@ -44,6 +47,8 @@ let pointerStartX = 0;
 let pointerStartY = 0;
 let pointerLocalX = 0;
 let pointerLocalY = 0;
+let windowStartX = 0;
+let windowStartY = 0;
 let characterHidden = false;
 let currentScale = 1;
 let autoFitScale = 1;
@@ -54,6 +59,7 @@ let talkLoopTimer: number | null = null;
 let talkStopTimer: number | null = null;
 let customAnimationTimer: number | null = null;
 let stageAnimationFrame: number | null = null;
+let actionIndicatorTimer: number | null = null;
 const chatClient = new ChatClient({
     apiEndpoint: 'http://localhost:8080/chat',
 });
@@ -62,8 +68,15 @@ const live2dModels: Record<string, string> = {
     kei: '/live2d/kei_en/kei_basic_free/runtime/kei_basic_free.model3.json',
     chitose: '/live2d/chitose/chitose_t02.model3.json',
     hiyori: '/live2d/hiyori/hiyori_pro_jp.model3.json',
+    shizuku: '/live2d/shizuku/runtime/shizuku.model3.json',
+    hiyori_pro_zh: '/live2d/hiyori_pro_zh/runtime/hiyori_pro_t11.model3.json',
+    mao_pro_zh: '/live2d/mao_pro_zh/runtime/mao_pro.model3.json',
+    miara_pro_en: '/live2d/miara_pro_en/runtime/miara_pro_t03.model3.json',
+    miku_pro_jp: '/live2d/miku_pro_jp/runtime/miku_sample_t04.model3.json',
+    natori_pro_zh: '/live2d/natori_pro_zh/runtime/natori_pro_t06.model3.json',
+    ren_pro_zh: '/live2d/ren_pro_zh/runtime/ren.model3.json',
 };
-let currentCharacter = 'kei';
+let currentCharacter = 'hiyori_pro_zh';
 const characterBehaviors: Record<string, CharacterBehavior> = {
     kei: {
         idleGroups: [''],
@@ -90,7 +103,7 @@ const characterBehaviors: Record<string, CharacterBehavior> = {
 let appSettings: AppSettings = {
     user_nickname: '小伙伴',
     user_display_name: '你',
-    character_type: 'kei',
+    character_type: 'hiyori_pro_zh',
     character_name: '小艾',
     personality: ['温柔'],
     interaction_mode: 'work',
@@ -105,6 +118,7 @@ const live2dDebugState = {
     currentCharacter,
     idleActive: false,
     talkingActive: false,
+    hiyoriActions: null as Record<HiyoriAction, string> | null,
 };
 
 async function loadAppSettings() {
@@ -160,14 +174,22 @@ function updateChatTitle() {
 function getCharacterDisplayName(name: string) {
     const labels: Record<string, string> = {
         kei: 'Kei',
-        chitose: 'Chitose',
-        hiyori: 'Hiyori',
+        shizuku: 'Shizuku',
+        hiyori_pro_zh: 'Hiyori',
+        mao_pro_zh: 'Mao',
+        miara_pro_en: 'Miara',
+        miku_pro_jp: 'Miku',
+        natori_pro_zh: 'Natori',
     };
     return labels[name] ?? name;
 }
 
 function getCurrentBehavior() {
     return characterBehaviors[currentCharacter] ?? characterBehaviors.kei;
+}
+
+function isHiyoriCharacter() {
+    return currentCharacter === 'hiyori' || currentCharacter === 'hiyori_pro_zh';
 }
 
 function getRandomItem<T>(items: T[]): T | null {
@@ -427,6 +449,16 @@ function runHiyoriStageAction(
     stageAnimationFrame = window.requestAnimationFrame(tick);
 }
 
+function holdPose(progress: number, holdStart = 0.3, holdEnd = 0.72) {
+    if (progress <= holdStart) {
+        return progress / holdStart;
+    }
+    if (progress >= holdEnd) {
+        return Math.max(0, 1 - (progress - holdEnd) / (1 - holdEnd));
+    }
+    return 1;
+}
+
 function playHiyoriAction(action: HiyoriAction) {
     if (!currentModel || currentCharacter !== 'hiyori') return;
 
@@ -468,16 +500,18 @@ function playHiyoriAction(action: HiyoriAction) {
         case 'chinRest':
             console.log('ACTION: hiyori-chinrest-full');
             animateChinRest();
-            runHiyoriStageAction(1500, (progress, stage) => {
-                const hold = Math.sin(progress * Math.PI);
-                stage.style.transform = `translate3d(${-22 * hold}px, ${14 * hold}px, 0) rotate(${-9 * hold}deg) scale(${1 + 0.02 * hold}, ${1 - 0.03 * hold})`;
-                setModelParameter(angleX, -16 * hold);
-                setModelParameter(angleY, 10 * hold);
-                setModelParameter(angleZ, -18 * hold);
+            runHiyoriStageAction(1900, (progress, stage) => {
+                const hold = holdPose(progress, 0.28, 0.78);
+                stage.style.transform = `translate3d(${-42 * hold}px, ${18 * hold}px, 0) rotate(${-15 * hold}deg) scale(${1 + 0.03 * hold}, ${1 - 0.06 * hold})`;
+                setModelParameter(angleX, -24 * hold);
+                setModelParameter(angleY, 18 * hold);
+                setModelParameter(angleZ, -24 * hold);
+                setModelParameter(bodyX, -8 * hold);
             }, () => {
                 setModelParameter(angleX, 0);
                 setModelParameter(angleY, 0);
                 setModelParameter(angleZ, 0);
+                setModelParameter(bodyX, 0);
             });
             break;
         case 'wave':
@@ -508,12 +542,14 @@ function playHiyoriAction(action: HiyoriAction) {
             break;
         case 'crouch':
             console.log('ACTION: hiyori-crouch-full');
-            runHiyoriStageAction(1200, (progress, stage) => {
-                const dip = Math.sin(progress * Math.PI);
-                stage.style.transform = `translate3d(0, ${74 * dip}px, 0) scale(${1 + 0.12 * dip}, ${1 - 0.28 * dip}) rotate(${-4 * dip}deg)`;
-                setModelParameter(bodyX, 8 * dip);
+            runHiyoriStageAction(1600, (progress, stage) => {
+                const dip = holdPose(progress, 0.25, 0.68);
+                stage.style.transform = `translate3d(0, ${112 * dip}px, 0) scale(${1 + 0.16 * dip}, ${1 - 0.36 * dip}) rotate(${-6 * dip}deg)`;
+                setModelParameter(bodyX, 14 * dip);
+                setModelParameter(angleY, -10 * dip);
             }, () => {
                 setModelParameter(bodyX, 0);
+                setModelParameter(angleY, 0);
             });
             break;
     }
@@ -663,6 +699,61 @@ function animateHiyoriCrouch() {
         currentModel.rotation = -0.08 * dip;
         currentModel.scale.set(currentScale * (1 + 0.12 * dip), currentScale * (1 - 0.28 * dip));
     });
+}
+
+function getHiyoriActionHandlers(): Record<HiyoriAction, HiyoriActionHandler> {
+    return {
+        nod: () => {
+            animateNod();
+            animateHeadTilt(-0.2, -26, 980);
+        },
+        shake: () => {
+            animateShakeHead();
+            animateBodyBounce(24, 0, 0.1, 900);
+        },
+        chinRest: () => {
+            animateHiyoriChinRest();
+            animateChinRest();
+        },
+        wave: () => {
+            animateHiyoriWave();
+            void playMotionByCandidates(['Flick', 'Flick@Body']);
+        },
+        reject: () => {
+            animateHiyoriReject();
+            animateShakeHead();
+        },
+        crouch: () => {
+            animateHiyoriCrouch();
+            animateCrouchLike();
+        },
+    };
+}
+
+function triggerHiyoriAction(action: HiyoriAction) {
+    const handlers = getHiyoriActionHandlers();
+    const handler = handlers[action];
+    if (!handler) return;
+    console.log(`ACTION: hiyori-${action}-module`);
+    showActionIndicator(HIYORI_ACTIONS[action].label, HIYORI_ACTIONS[action].durationMs);
+    handler();
+}
+
+function showActionIndicator(label: string, durationMs: number) {
+    const indicator = document.getElementById('action-indicator');
+    if (!indicator) return;
+
+    if (actionIndicatorTimer !== null) {
+        window.clearTimeout(actionIndicatorTimer);
+        actionIndicatorTimer = null;
+    }
+
+    indicator.textContent = label;
+    indicator.classList.add('visible');
+    actionIndicatorTimer = window.setTimeout(() => {
+        indicator.classList.remove('visible');
+        actionIndicatorTimer = null;
+    }, Math.max(500, durationMs - 120));
 }
 
 async function playMotionFromGroups(groups: string[]) {
@@ -832,8 +923,8 @@ async function triggerFaceReaction() {
         if (!changed) {
             await playMotionByCandidates(['Tap', 'Idle']);
         }
-    } else if (currentCharacter === 'hiyori') {
-        playHiyoriAction('nod');
+    } else if (isHiyoriCharacter()) {
+        // Keep region click feedback, but disable Hiyori action playback for now.
     } else {
         await playMotionByCandidates(['']);
         setLipSyncValue(0.35);
@@ -849,8 +940,8 @@ async function triggerChestReaction() {
         if (!changed) {
             await playMotionByCandidates(['Tap']);
         }
-    } else if (currentCharacter === 'hiyori') {
-        playHiyoriAction('chinRest');
+    } else if (isHiyoriCharacter()) {
+        // Keep region click feedback, but disable Hiyori action playback for now.
     } else {
         await playMotionByCandidates(['']);
     }
@@ -864,8 +955,8 @@ async function triggerArmsReaction() {
         if (!moved) {
             await playExpressionByCandidates(['Smile.exp3.json', 'Normal.exp3.json']);
         }
-    } else if (currentCharacter === 'hiyori') {
-        playHiyoriAction('wave');
+    } else if (isHiyoriCharacter()) {
+        // Keep region click feedback, but disable Hiyori action playback for now.
     } else {
         await playMotionByCandidates(['']);
     }
@@ -879,8 +970,8 @@ async function triggerBellyReaction() {
         if (!changed) {
             await playMotionByCandidates(['Tap']);
         }
-    } else if (currentCharacter === 'hiyori') {
-        playHiyoriAction('reject');
+    } else if (isHiyoriCharacter()) {
+        // Keep region click feedback, but disable Hiyori action playback for now.
     } else {
         await playMotionByCandidates(['']);
         setLipSyncValue(0.55);
@@ -896,8 +987,8 @@ async function triggerLegsReaction() {
         if (!moved) {
             await playExpressionByCandidates(['Normal.exp3.json', 'Smile.exp3.json']);
         }
-    } else if (currentCharacter === 'hiyori') {
-        playHiyoriAction('crouch');
+    } else if (isHiyoriCharacter()) {
+        // Keep region click feedback, but disable Hiyori action playback for now.
     } else {
         await playMotionByCandidates(['']);
     }
@@ -933,6 +1024,9 @@ declare global {
 }
 
 window.__live2dDebugState = live2dDebugState;
+live2dDebugState.hiyoriActions = Object.fromEntries(
+    HIYORI_ACTION_KEYS.map((key) => [key, HIYORI_ACTIONS[key].label]),
+) as Record<HiyoriAction, string>;
 
 async function ensureCubismCore() {
     if (window.Live2DCubismCore) {
@@ -1051,7 +1145,6 @@ function bindCharacterInteractions() {
     if (!hitArea) return;
 
     const dragThreshold = 6;
-    hitArea.setAttribute('data-tauri-drag-region', '');
 
     hitArea.addEventListener('pointerdown', (event) => {
         if (event.button !== 0) return;
@@ -1062,15 +1155,31 @@ function bindCharacterInteractions() {
         const rect = hitArea.getBoundingClientRect();
         pointerLocalX = event.clientX - rect.left;
         pointerLocalY = event.clientY - rect.top;
+
+        void getCurrentWindow().outerPosition().then((position) => {
+            windowStartX = position.x;
+            windowStartY = position.y;
+        });
     });
 
-    hitArea.addEventListener('pointermove', (event) => {
+    hitArea.addEventListener('pointermove', async (event) => {
         if (!pointerDown) return;
 
         const moved = Math.hypot(event.screenX - pointerStartX, event.screenY - pointerStartY);
         if (!dragStarted && moved < dragThreshold) return;
 
         dragStarted = true;
+
+        try {
+            await getCurrentWindow().setPosition(
+                new PhysicalPosition(
+                    Math.round(windowStartX + (event.screenX - pointerStartX)),
+                    Math.round(windowStartY + (event.screenY - pointerStartY)),
+                ),
+            );
+        } catch (error) {
+            console.debug('Window drag move failed.', error);
+        }
     });
 
     hitArea.addEventListener('pointerup', () => {
@@ -1078,11 +1187,14 @@ function bindCharacterInteractions() {
             const region = detectCharacterRegion(pointerLocalX, pointerLocalY, hitArea.clientWidth || 1, hitArea.clientHeight || 1);
             console.log(`🎯 点击区域: ${region}`);
             void triggerRegionReaction(region);
-            window.setTimeout(() => openChat(), 260);
         }
 
         pointerDown = false;
         dragStarted = false;
+    });
+
+    hitArea.addEventListener('dblclick', () => {
+        openChat();
     });
 
     hitArea.addEventListener('pointerleave', () => {

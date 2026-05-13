@@ -34,7 +34,7 @@ class ChatResponse(BaseModel):
 class Config(BaseModel):
     user_nickname: str = "小伙伴"
     user_display_name: str = "你"
-    character_type: str = "kei"
+    character_type: str = "hiyori_pro_zh"
     character_name: str = "小艾"
     personality: list[str] = Field(default_factory=lambda: ["温柔"])
     interaction_mode: str = "work"
