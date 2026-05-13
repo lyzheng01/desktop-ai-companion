@@ -1,11 +1,34 @@
-from fastapi.testclient import TestClient
+import json
 
-from app.config import AppConfig, CONFIG_FILE, save_config
+from fastapi.testclient import TestClient
+import pytest
+
+import app.config as config_module
+import app.db as db_module
+from app.config import AppConfig, save_config
 from app.db import clear_messages, get_messages
 from backend.server import app
 
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def isolate_test_storage(tmp_path):
+    config_module.CONFIG_FILE = tmp_path / "config.json"
+    config_module.DB_PATH = tmp_path / "companion.db"
+    db_module.DB_PATH = tmp_path / "companion.db"
+    config_module.config = AppConfig()
+    save_config(config_module.config)
+    db_module.init_db()
+    yield
+
+
+def reset_live_config(cfg: AppConfig | None = None):
+    if cfg is None:
+        cfg = AppConfig()
+    config_module.config = cfg
+    save_config(cfg)
 
 
 def test_health_endpoint_returns_ok():
@@ -15,7 +38,7 @@ def test_health_endpoint_returns_ok():
 
 
 def test_config_round_trip_persists_values():
-    save_config(AppConfig())
+    reset_live_config()
 
     payload = {
         "user_nickname": "测试用户",
@@ -26,10 +49,21 @@ def test_config_round_trip_persists_values():
         "interaction_mode": "daily",
         "proactive_mode": "greet",
         "chat_model": "deepseek",
+        "dnd_enabled": True,
+        "dnd_start": "21:30",
+        "dnd_end": "07:45",
         "window_x": 123,
         "window_y": 456,
         "window_scale": 0.88,
         "character_scales": {"kei": 0.88, "hiyori": 0.72},
+        "auto_start": True,
+        "always_on_top": True,
+        "click_through": True,
+        "opacity": 0.76,
+        "api_provider": "custom",
+        "model_name": "deepseek-chat",
+        "show_notifications": False,
+        "sound_enabled": False,
     }
 
     save_response = client.post("/config", json=payload)
@@ -45,12 +79,23 @@ def test_config_round_trip_persists_values():
     assert data["interaction_mode"] == "daily"
     assert data["proactive_mode"] == "greet"
     assert data["chat_model"] == "deepseek"
+    assert data["dnd_enabled"] is True
+    assert data["dnd_start"] == "21:30"
+    assert data["dnd_end"] == "07:45"
     assert data["window_x"] == 123
     assert data["window_y"] == 456
     assert data["window_scale"] == 0.88
     assert data["character_scales"]["hiyori"] == 0.72
+    assert data["auto_start"] is True
+    assert data["always_on_top"] is True
+    assert data["click_through"] is True
+    assert data["opacity"] == 0.76
+    assert data["api_provider"] == "custom"
+    assert data["model_name"] == "deepseek-chat"
+    assert data["show_notifications"] is False
+    assert data["sound_enabled"] is False
 
-    persisted = AppConfig.load(CONFIG_FILE)
+    persisted = AppConfig.load(config_module.CONFIG_FILE)
     assert persisted.user_nickname == "测试用户"
     assert persisted.user_display_name == "阿泽"
     assert persisted.character_name == "千岁"
@@ -58,10 +103,218 @@ def test_config_round_trip_persists_values():
     assert persisted.interaction_mode == "daily"
     assert persisted.proactive_mode == "greet"
     assert persisted.chat_model == "deepseek"
+    assert persisted.dnd_enabled is True
+    assert persisted.dnd_start == "21:30"
+    assert persisted.dnd_end == "07:45"
     assert persisted.window_x == 123
     assert persisted.window_y == 456
     assert persisted.window_scale == 0.88
     assert persisted.character_scales["kei"] == 0.88
+    assert persisted.auto_start is True
+    assert persisted.always_on_top is True
+    assert persisted.click_through is True
+    assert persisted.opacity == 0.76
+    assert persisted.api_provider == "custom"
+    assert persisted.model_name == "deepseek-chat"
+    assert persisted.show_notifications is False
+    assert persisted.sound_enabled is False
+
+    reset_live_config()
+
+
+def test_config_partial_update_preserves_unrelated_fields():
+    reset_live_config(
+        AppConfig(
+            user_nickname="测试用户",
+            character_type="kei",
+            dnd_enabled=True,
+            dnd_start="21:30",
+            dnd_end="07:45",
+            auto_start=True,
+            always_on_top=True,
+            click_through=True,
+            opacity=0.55,
+        )
+    )
+
+    response = client.post("/config", json={"opacity": 0.76})
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["opacity"] == 0.76
+    assert data["user_nickname"] == "测试用户"
+    assert data["character_type"] == "kei"
+    assert data["dnd_enabled"] is True
+    assert data["dnd_start"] == "21:30"
+    assert data["dnd_end"] == "07:45"
+    assert data["auto_start"] is True
+    assert data["always_on_top"] is True
+    assert data["click_through"] is True
+
+    persisted = AppConfig.load(config_module.CONFIG_FILE)
+    assert persisted.opacity == 0.76
+    assert persisted.user_nickname == "测试用户"
+    assert persisted.character_type == "kei"
+    assert persisted.dnd_enabled is True
+    assert persisted.dnd_start == "21:30"
+    assert persisted.dnd_end == "07:45"
+    assert persisted.auto_start is True
+    assert persisted.always_on_top is True
+    assert persisted.click_through is True
+
+    reset_live_config()
+
+
+def test_config_partial_update_ignores_explicit_null_values():
+    reset_live_config(AppConfig(user_nickname="测试用户"))
+
+    response = client.post("/config", json={"user_nickname": None})
+
+    assert response.status_code == 200
+    assert response.json()["user_nickname"] == "测试用户"
+
+    persisted = AppConfig.load(config_module.CONFIG_FILE)
+    assert persisted.user_nickname == "测试用户"
+
+    reset_live_config()
+
+
+def test_config_get_does_not_expose_api_key():
+    reset_live_config(AppConfig(api_key="secret-key"))
+
+    response = client.get("/config")
+
+    assert response.status_code == 200
+    assert "api_key" not in response.json()
+
+
+def test_config_rejects_invalid_dnd_time_strings():
+    reset_live_config()
+
+    response = client.post(
+        "/config",
+        json={
+            "dnd_start": "25:99",
+            "dnd_end": "07:45",
+        },
+    )
+
+    assert response.status_code == 422
+    errors = response.json()["detail"]
+    assert any(error["loc"][-1] == "dnd_start" for error in errors)
+
+
+def test_config_rejects_opacity_outside_desktop_range():
+    reset_live_config()
+
+    response = client.post(
+        "/config",
+        json={
+            "opacity": 1.5,
+        },
+    )
+
+    assert response.status_code == 422
+    errors = response.json()["detail"]
+    assert any(error["loc"][-1] == "opacity" for error in errors)
+
+
+def test_config_get_sanitizes_invalid_persisted_values():
+    with open(config_module.CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "dnd_start": "25:99",
+                "dnd_end": "abc",
+                "opacity": 9.9,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    config_module.config = AppConfig.load(config_module.CONFIG_FILE)
+
+    response = client.get("/config")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["dnd_start"] == "22:00"
+    assert data["dnd_end"] == "08:00"
+    assert data["opacity"] == 1.0
+
+    reset_live_config()
+
+
+def test_config_get_sanitizes_invalid_persisted_scalar_field():
+    with open(config_module.CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "window_x": None,
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    config_module.config = AppConfig.load(config_module.CONFIG_FILE)
+
+    response = client.get("/config")
+
+    assert response.status_code == 200
+    assert response.json()["window_x"] == 100
+
+    reset_live_config()
+
+
+def test_config_load_falls_back_on_malformed_json():
+    with open(config_module.CONFIG_FILE, "w", encoding="utf-8") as f:
+        f.write("{")
+
+    loaded = AppConfig.load(config_module.CONFIG_FILE)
+
+    assert loaded == AppConfig()
+
+
+def test_config_get_sanitizes_invalid_persisted_personality_shape():
+    with open(config_module.CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "personality": "温柔",
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    config_module.config = AppConfig.load(config_module.CONFIG_FILE)
+
+    response = client.get("/config")
+
+    assert response.status_code == 200
+    assert response.json()["personality"] == ["温柔"]
+
+    reset_live_config()
+
+
+def test_config_get_sanitizes_invalid_persisted_character_scales_shape():
+    with open(config_module.CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "character_scales": ["bad"],
+            },
+            f,
+            ensure_ascii=False,
+            indent=2,
+        )
+
+    config_module.config = AppConfig.load(config_module.CONFIG_FILE)
+
+    response = client.get("/config")
+
+    assert response.status_code == 200
+    assert response.json()["character_scales"] == {}
+
+    reset_live_config()
 
 
 def test_chat_writes_history():

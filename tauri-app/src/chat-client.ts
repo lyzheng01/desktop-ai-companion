@@ -65,10 +65,24 @@ export class ChatClient {
         return this.callAI(content);
     }
 
+    public async loadHistory(limit: number = 20): Promise<ChatMessage[]> {
+        const historyEndpoint = this.getEndpointUrl('history');
+
+        const response = await fetch(`${historyEndpoint}?limit=${limit}`);
+        if (!response.ok) {
+            throw new Error(`History request failed: ${response.status}`);
+        }
+
+        const data = await response.json() as ChatMessage[];
+        this.messages = Array.isArray(data) ? data : [];
+
+        return this.getHistory(limit);
+    }
+
     // 调用 AI 接口
     private async callAI(userMessage: string): Promise<ChatMessage> {
         // 方案 1: 调用本地 Python 后端
-        const localEndpoint = this.config.apiEndpoint || 'http://localhost:8080/chat';
+        const localEndpoint = this.getEndpointUrl('chat');
 
         try {
             const response = await fetch(localEndpoint, {
@@ -114,6 +128,20 @@ export class ChatClient {
             '好哒，交给我吧！',
         ];
         return responses[Math.floor(Math.random() * responses.length)];
+    }
+
+    private getEndpointUrl(kind: 'chat' | 'history'): string {
+        const endpoint = new URL(this.config.apiEndpoint || 'http://localhost:8080/chat');
+        const pathSegments = endpoint.pathname.split('/').filter(Boolean);
+
+        if (pathSegments.length === 0) {
+            endpoint.pathname = `/${kind}`;
+            return endpoint.toString();
+        }
+
+        pathSegments[pathSegments.length - 1] = kind;
+        endpoint.pathname = `/${pathSegments.join('/')}`;
+        return endpoint.toString();
     }
 
     // 获取历史消息

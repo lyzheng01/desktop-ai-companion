@@ -11,11 +11,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List
 import uvicorn
 
-from app.config import AppConfig, get_config, save_config as persist_config
+from app.config import AppConfig, TIME_PATTERN, get_config, save_config as persist_config
 from app.db import clear_messages, get_messages, save_message
 
 # ============== 数据模型 ==============
@@ -40,10 +40,65 @@ class Config(BaseModel):
     interaction_mode: str = "work"
     proactive_mode: str = "quiet"
     chat_model: str = "gpt"
+    dnd_enabled: bool = False
+    dnd_start: str = "22:00"
+    dnd_end: str = "08:00"
     window_x: int = 100
     window_y: int = 100
     window_scale: float = 1.0
     character_scales: dict[str, float] = Field(default_factory=dict)
+    api_provider: str = "default"
+    model_name: str = "default"
+    auto_start: bool = False
+    always_on_top: bool = False
+    click_through: bool = False
+    opacity: float = Field(default=1.0, ge=0.0, le=1.0)
+    show_notifications: bool = True
+    sound_enabled: bool = True
+
+    @field_validator("dnd_start", "dnd_end")
+    @classmethod
+    def validate_time_string(cls, value: str) -> str:
+        if not TIME_PATTERN.fullmatch(value):
+            raise ValueError("must be a valid HH:MM time")
+        return value
+
+
+class ConfigUpdate(BaseModel):
+    user_nickname: str | None = None
+    user_display_name: str | None = None
+    character_type: str | None = None
+    character_name: str | None = None
+    personality: list[str] | None = None
+    interaction_mode: str | None = None
+    proactive_mode: str | None = None
+    chat_model: str | None = None
+    dnd_enabled: bool | None = None
+    dnd_start: str | None = None
+    dnd_end: str | None = None
+    window_x: int | None = None
+    window_y: int | None = None
+    window_scale: float | None = None
+    character_scales: dict[str, float] | None = None
+    api_provider: str | None = None
+    model_name: str | None = None
+    auto_start: bool | None = None
+    always_on_top: bool | None = None
+    click_through: bool | None = None
+    opacity: float | None = Field(default=None, ge=0.0, le=1.0)
+    show_notifications: bool | None = None
+    sound_enabled: bool | None = None
+
+    @field_validator("dnd_start", "dnd_end")
+    @classmethod
+    def validate_optional_time_string(cls, value: str | None) -> str | None:
+        if value is not None and not TIME_PATTERN.fullmatch(value):
+            raise ValueError("must be a valid HH:MM time")
+        return value
+
+
+def to_api_config(current: AppConfig) -> Config:
+    return Config.model_validate(current.__dict__)
 
 # ============== FastAPI 应用 ==============
 
@@ -85,53 +140,16 @@ async def chat(request: ChatRequest):
 @app.get("/config", response_model=Config)
 async def get_config_endpoint():
     """获取配置"""
-    current = get_config()
-    return Config(
-        user_nickname=current.user_nickname,
-        user_display_name=current.user_display_name,
-        character_type=current.character_type,
-        character_name=current.character_name,
-        personality=current.personality,
-        interaction_mode=current.interaction_mode,
-        proactive_mode=current.proactive_mode,
-        chat_model=current.chat_model,
-        window_x=current.window_x,
-        window_y=current.window_y,
-        window_scale=current.window_scale,
-        character_scales=current.character_scales,
-    )
+    return to_api_config(get_config())
 
 @app.post("/config", response_model=Config)
-async def save_config_endpoint(config: Config):
+async def save_config_endpoint(config: ConfigUpdate):
     """保存配置"""
     current = get_config()
-    current.user_nickname = config.user_nickname
-    current.user_display_name = config.user_display_name
-    current.character_type = config.character_type
-    current.character_name = config.character_name
-    current.personality = config.personality
-    current.interaction_mode = config.interaction_mode
-    current.proactive_mode = config.proactive_mode
-    current.chat_model = config.chat_model
-    current.window_x = config.window_x
-    current.window_y = config.window_y
-    current.window_scale = config.window_scale
-    current.character_scales = config.character_scales
+    for field, value in config.model_dump(exclude_unset=True, exclude_none=True).items():
+        setattr(current, field, value)
     persist_config(current)
-    return Config(
-        user_nickname=current.user_nickname,
-        user_display_name=current.user_display_name,
-        character_type=current.character_type,
-        character_name=current.character_name,
-        personality=current.personality,
-        interaction_mode=current.interaction_mode,
-        proactive_mode=current.proactive_mode,
-        chat_model=current.chat_model,
-        window_x=current.window_x,
-        window_y=current.window_y,
-        window_scale=current.window_scale,
-        character_scales=current.character_scales,
-    )
+    return to_api_config(current)
 
 @app.get("/history")
 async def get_history(limit: int = 50):
