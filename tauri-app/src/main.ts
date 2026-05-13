@@ -5,7 +5,7 @@
 
 import * as PIXI from 'pixi.js';
 import { invoke } from '@tauri-apps/api/core';
-import { ChatClient } from './chat-client';
+import { ChatClient, type ChatMessage } from './chat-client';
 
 // ============== 全局状态 ==============
 
@@ -34,6 +34,7 @@ type CharacterBehavior = {
 
 type CharacterRegion = 'face' | 'chest' | 'arms' | 'belly' | 'legs';
 type HiyoriAction = 'nod' | 'shake' | 'chinRest' | 'wave' | 'reject' | 'crouch';
+type CompanionState = 'idle' | 'listening' | 'thinking' | 'talking';
 
 let app: PIXI.Application;
 let currentModel: any = null;
@@ -45,6 +46,8 @@ let pointerStartY = 0;
 let pointerLocalX = 0;
 let pointerLocalY = 0;
 let characterHidden = false;
+let chatHistoryLoaded = false;
+let chatHistoryLoadPromise: Promise<void> | null = null;
 let currentScale = 1;
 let autoFitScale = 1;
 let baseModelX = 0;
@@ -52,6 +55,7 @@ let baseModelY = 0;
 let idleActionTimer: number | null = null;
 let talkLoopTimer: number | null = null;
 let talkStopTimer: number | null = null;
+let talkingSessionId = 0;
 let customAnimationTimer: number | null = null;
 let stageAnimationFrame: number | null = null;
 const chatClient = new ChatClient({
@@ -106,6 +110,11 @@ const live2dDebugState = {
     idleActive: false,
     talkingActive: false,
 };
+
+function setCompanionState(state: CompanionState) {
+    document.body.dataset.companionState = state;
+    console.log(`COMPANION_STATE: ${state}`);
+}
 
 async function loadAppSettings() {
     try {
@@ -766,13 +775,26 @@ function scheduleIdleLoop() {
 }
 
 function startTalkingAnimation(text: string) {
-    if (!currentModel) return;
+    const duration = Math.min(5000, Math.max(900, text.length * 90));
 
     if (talkLoopTimer !== null) {
         window.clearInterval(talkLoopTimer);
+        talkLoopTimer = null;
     }
     if (talkStopTimer !== null) {
         window.clearTimeout(talkStopTimer);
+    }
+
+    const sessionId = ++talkingSessionId;
+    setCompanionState('talking');
+
+    if (!currentModel) {
+        talkStopTimer = window.setTimeout(() => {
+            if (sessionId !== talkingSessionId) return;
+            talkStopTimer = null;
+            setCompanionState('idle');
+        }, duration);
+        return;
     }
 
     live2dDebugState.talkingActive = true;
@@ -785,14 +807,16 @@ function startTalkingAnimation(text: string) {
         setLipSyncValue(0.2 + Math.random() * 0.8);
     }, 120);
 
-    const duration = Math.min(5000, Math.max(900, text.length * 90));
     talkStopTimer = window.setTimeout(() => {
+        if (sessionId !== talkingSessionId) return;
         if (talkLoopTimer !== null) {
             window.clearInterval(talkLoopTimer);
             talkLoopTimer = null;
         }
+        talkStopTimer = null;
         setLipSyncValue(0);
         live2dDebugState.talkingActive = false;
+        setCompanionState('idle');
     }, duration);
 }
 
@@ -1078,7 +1102,7 @@ function bindCharacterInteractions() {
             const region = detectCharacterRegion(pointerLocalX, pointerLocalY, hitArea.clientWidth || 1, hitArea.clientHeight || 1);
             console.log(`🎯 点击区域: ${region}`);
             void triggerRegionReaction(region);
-            window.setTimeout(() => openChat(), 260);
+            window.setTimeout(() => void openChat(), 260);
         }
 
         pointerDown = false;
@@ -1094,7 +1118,13 @@ function bindCharacterInteractions() {
 
 // ============== 聊天窗口 ==============
 
-function openChat() {
+async function openChat() {
+    try {
+        await ensureChatHistoryLoaded();
+    } catch (error) {
+        console.warn('加载聊天记录失败，将在下次打开时重试。', error);
+    }
+
     const chatWindow = document.getElementById('chat-window');
     if (chatWindow) {
         chatWindow.classList.add('visible');
@@ -1173,7 +1203,7 @@ function toggleChat() {
     if (chatWindowVisible) {
         closeChat();
     } else {
-        openChat();
+        void openChat();
     }
 }
 
@@ -1186,15 +1216,18 @@ async function sendMessage() {
 
     input.value = '';
 
+    setCompanionState('listening');
     addMessage('user', text);
     void triggerCharacterAttention();
 
     try {
+        setCompanionState('thinking');
         const response = await chatClient.sendAndReturn(text);
         addMessage('assistant', response.content);
         startTalkingAnimation(response.content);
     } catch (error) {
         console.error('❌ 发送消息失败:', error);
+        setCompanionState('idle');
         addMessage('assistant', '抱歉，我遇到了一些问题，请稍后再试。');
     }
 }
@@ -1215,6 +1248,37 @@ function addMessage(role: string, content: string) {
 
     // 滚动到底部
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+async function ensureChatHistoryLoaded() {
+    if (chatHistoryLoaded) {
+        return;
+    }
+
+    if (chatHistoryLoadPromise) {
+        return chatHistoryLoadPromise;
+    }
+
+    chatHistoryLoadPromise = (async () => {
+        const history = await chatClient.loadHistory();
+        renderChatHistory(history);
+        chatHistoryLoaded = true;
+    })().catch((error) => {
+        chatHistoryLoaded = false;
+        throw error;
+    }).finally(() => {
+        chatHistoryLoadPromise = null;
+    });
+
+    return chatHistoryLoadPromise;
+}
+
+function renderChatHistory(messages: ChatMessage[]) {
+    const messagesContainer = document.getElementById('chat-messages');
+    if (!messagesContainer) return;
+
+    messagesContainer.innerHTML = '';
+    messages.forEach((message) => addMessage(message.role, message.content));
 }
 
 // ============== 右键菜单 ==============
@@ -1336,6 +1400,7 @@ document.addEventListener('keydown', (e) => {
 // ============== 初始化 ==============
 
 window.addEventListener('DOMContentLoaded', () => {
+    setCompanionState('idle');
     initPixi();
     bindContextMenuActions();
     bindCharacterInteractions();
