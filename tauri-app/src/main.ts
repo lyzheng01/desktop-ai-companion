@@ -1174,23 +1174,7 @@ function bindCharacterInteractions() {
 
     const dragThreshold = 6;
 
-    hitArea.addEventListener('pointerdown', (event) => {
-        if (event.button !== 0) return;
-        pointerDown = true;
-        dragStarted = false;
-        pointerStartX = event.screenX;
-        pointerStartY = event.screenY;
-        const rect = hitArea.getBoundingClientRect();
-        pointerLocalX = event.clientX - rect.left;
-        pointerLocalY = event.clientY - rect.top;
-
-        void getCurrentWindow().outerPosition().then((position) => {
-            windowStartX = position.x;
-            windowStartY = position.y;
-        });
-    });
-
-    hitArea.addEventListener('pointermove', async (event) => {
+    const onPointerMove = async (event: PointerEvent) => {
         if (!pointerDown) return;
 
         const moved = Math.hypot(event.screenX - pointerStartX, event.screenY - pointerStartY);
@@ -1208,28 +1192,45 @@ function bindCharacterInteractions() {
         } catch (error) {
             console.debug('Window drag move failed.', error);
         }
-    });
+    };
 
-    hitArea.addEventListener('pointerup', () => {
+    const stopPointerTracking = () => {
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+    };
+
+    const onPointerUp = () => {
         if (pointerDown && !dragStarted) {
             const region = detectCharacterRegion(pointerLocalX, pointerLocalY, hitArea.clientWidth || 1, hitArea.clientHeight || 1);
             console.log(`🎯 点击区域: ${region}`);
             void triggerRegionReaction(region);
-            window.setTimeout(() => void openChat(), 260);
         }
 
         pointerDown = false;
         dragStarted = false;
+        stopPointerTracking();
+    };
+
+    hitArea.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        pointerDown = true;
+        dragStarted = false;
+        pointerStartX = event.screenX;
+        pointerStartY = event.screenY;
+        const rect = hitArea.getBoundingClientRect();
+        pointerLocalX = event.clientX - rect.left;
+        pointerLocalY = event.clientY - rect.top;
+
+        void getCurrentWindow().outerPosition().then((position) => {
+            windowStartX = position.x;
+            windowStartY = position.y;
+        });
+        window.addEventListener('pointermove', onPointerMove);
+        window.addEventListener('pointerup', onPointerUp);
     });
 
     hitArea.addEventListener('dblclick', () => {
-        openChat();
-    });
-
-    hitArea.addEventListener('pointerleave', () => {
-        if (!dragStarted) {
-            pointerDown = false;
-        }
+        void openChat();
     });
 }
 
