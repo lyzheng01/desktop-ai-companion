@@ -1,0 +1,10 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "Raiga.moc3",
+		"Textures": [
+			"Raiga.1024/texture_00.png"
+		],
+		"DisplayInfo": "Raiga.cdi3.json"
+	}
+}

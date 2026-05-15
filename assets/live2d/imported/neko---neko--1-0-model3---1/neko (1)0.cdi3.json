@@ -1,0 +1,224 @@
+{
+	"Version": 3,
+	"Parameters": [
+		{
+			"Id": "ParamAngleX",
+			"GroupId": "",
+			"Name": "角度 X"
+		},
+		{
+			"Id": "ParamAngleY",
+			"GroupId": "",
+			"Name": "角度 Y"
+		},
+		{
+			"Id": "ParamAngleZ",
+			"GroupId": "",
+			"Name": "角度 Z"
+		},
+		{
+			"Id": "ParamEyeLOpen",
+			"GroupId": "",
+			"Name": "左目　開閉"
+		},
+		{
+			"Id": "ParamEyeLSmile",
+			"GroupId": "",
+			"Name": "左目　笑顔"
+		},
+		{
+			"Id": "ParamEyeROpen",
+			"GroupId": "",
+			"Name": "右目　開閉"
+		},
+		{
+			"Id": "ParamEyeRSmile",
+			"GroupId": "",
+			"Name": "右目　笑顔"
+		},
+		{
+			"Id": "ParamEyeBallX",
+			"GroupId": "",
+			"Name": "目玉 X"
+		},
+		{
+			"Id": "ParamEyeBallY",
+			"GroupId": "",
+			"Name": "目玉 Y"
+		},
+		{
+			"Id": "ParamBrowLForm",
+			"GroupId": "",
+			"Name": "左眉　変形"
+		},
+		{
+			"Id": "ParamBrowRForm",
+			"GroupId": "",
+			"Name": "右眉　変形"
+		},
+		{
+			"Id": "ParamMouthForm",
+			"GroupId": "",
+			"Name": "口　変形"
+		},
+		{
+			"Id": "ParamMouthOpenY",
+			"GroupId": "",
+			"Name": "口　開閉"
+		},
+		{
+			"Id": "ParamBodyAngleX",
+			"GroupId": "",
+			"Name": "体の回転　X"
+		},
+		{
+			"Id": "ParamBodyAngleY",
+			"GroupId": "",
+			"Name": "体の回転　Y"
+		},
+		{
+			"Id": "ParamBodyAngleZ",
+			"GroupId": "",
+			"Name": "体の回転　Z"
+		},
+		{
+			"Id": "ParamBreath",
+			"GroupId": "",
+			"Name": "呼吸"
+		},
+		{
+			"Id": "ParamHairFront",
+			"GroupId": "",
+			"Name": "髪揺れ　前"
+		},
+		{
+			"Id": "Param5",
+			"GroupId": "",
+			"Name": "髪揺れ前２"
+		},
+		{
+			"Id": "ParamHairSide",
+			"GroupId": "",
+			"Name": "髪揺れ　横"
+		},
+		{
+			"Id": "Param6",
+			"GroupId": "",
+			"Name": "髪揺れ横２"
+		},
+		{
+			"Id": "ParamHairBack",
+			"GroupId": "",
+			"Name": "髪揺れ　後"
+		},
+		{
+			"Id": "Param7",
+			"GroupId": "",
+			"Name": "後髪２"
+		},
+		{
+			"Id": "Param",
+			"GroupId": "",
+			"Name": "耳揺れ１"
+		},
+		{
+			"Id": "Param2",
+			"GroupId": "",
+			"Name": "耳揺れ２"
+		},
+		{
+			"Id": "Param3",
+			"GroupId": "",
+			"Name": "耳揺れ３"
+		},
+		{
+			"Id": "Param4",
+			"GroupId": "",
+			"Name": "耳毛揺れ"
+		},
+		{
+			"Id": "Param8",
+			"GroupId": "",
+			"Name": "かざり横"
+		},
+		{
+			"Id": "Param9",
+			"GroupId": "",
+			"Name": "飾り上下"
+		},
+		{
+			"Id": "Param10",
+			"GroupId": "",
+			"Name": "n3konomi"
+		}
+	],
+	"ParameterGroups": [],
+	"Parts": [
+		{
+			"Id": "Part",
+			"Name": "後髪以外の髪"
+		},
+		{
+			"Id": "Part3",
+			"Name": "髪影（ファイルだけ乗算必須"
+		},
+		{
+			"Id": "Part4",
+			"Name": "←目"
+		},
+		{
+			"Id": "Part5",
+			"Name": "→目"
+		},
+		{
+			"Id": "Part6",
+			"Name": "体セット（首服後ろなし)"
+		},
+		{
+			"Id": "Part7",
+			"Name": "口のあたり"
+		},
+		{
+			"Id": "Part8",
+			"Name": "口"
+		},
+		{
+			"Id": "Part9",
+			"Name": "鼻"
+		},
+		{
+			"Id": "Part2",
+			"Name": "耳セット"
+		},
+		{
+			"Id": "Part10",
+			"Name": "後髪以外の髪"
+		}
+	],
+	"CombinedParameters": [
+		[
+			"ParamAngleX",
+			"ParamAngleY"
+		],
+		[
+			"ParamEyeBallX",
+			"ParamEyeBallY"
+		],
+		[
+			"ParamMouthForm",
+			"ParamMouthOpenY"
+		],
+		[
+			"ParamHairSide",
+			"Param6"
+		],
+		[
+			"Param",
+			"Param2"
+		],
+		[
+			"Param8",
+			"Param9"
+		]
+	]
+}
