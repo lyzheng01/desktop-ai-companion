@@ -19,6 +19,7 @@ export interface MemoryItem {
     content: string;
     category: string;
     importance: number;
+    scope?: string;
     created_at: string;
 }
 

@@ -151,6 +151,56 @@ def to_api_config(current: AppConfig) -> Config:
 def is_vip_user() -> bool:
     return False
 
+
+def extract_memory_candidates(message: str) -> list[dict]:
+    candidates = []
+    if "叫我" in message:
+        candidates.append(
+            {
+                "content": message.strip(),
+                "category": "preference",
+                "importance": 3,
+                "scope": "preference",
+            }
+        )
+    if any(token in message for token in ["最近在做", "最近在准备", "这周在做"]):
+        candidates.append(
+            {
+                "content": message.strip(),
+                "category": "project",
+                "importance": 2,
+                "scope": "short_term",
+            }
+        )
+    return candidates
+
+
+def persist_memory_candidates(candidates: list[dict]):
+    existing = {item["content"] for item in get_memories()}
+    for candidate in candidates:
+        if candidate["content"] in existing:
+            continue
+        save_memory(
+            candidate["content"],
+            category=candidate["category"],
+            importance=candidate["importance"],
+            scope=candidate["scope"],
+        )
+
+
+def build_memory_block(preference: list[dict], short_term: list[dict], long_term: list[dict]) -> str:
+    lines = []
+    if preference:
+        lines.append("稳定偏好：")
+        lines.extend(f"- {item['content']}" for item in preference[:3])
+    if short_term:
+        lines.append("近期情况：")
+        lines.extend(f"- {item['content']}" for item in short_term[:3])
+    if long_term:
+        lines.append("长期记忆：")
+        lines.extend(f"- {item['content']}" for item in long_term[:3])
+    return "\n".join(lines) if lines else "- 暂无额外记忆"
+
 # ============== FastAPI 应用 ==============
 
 app = FastAPI(title="Desktop AI Companion API")
@@ -179,6 +229,9 @@ async def chat(request: ChatRequest):
     - context: 历史消息 (最近 10 条)
     """
     save_message("user", request.message)
+
+    candidates = extract_memory_candidates(request.message)
+    persist_memory_candidates(candidates)
 
     current = apply_active_companion(get_config())
     response_content = shape_companion_reply(
@@ -311,8 +364,10 @@ def generate_chat_response(message: str, context: list[ChatMessage], config: App
     if not api_key:
         return generate_fallback_response(message)
 
-    memories = get_memories()[:5]
-    memory_block = "\n".join(f"- {item['content']}" for item in memories)
+    preference = get_memories(scope="preference")
+    short_term = get_memories(scope="short_term")
+    long_term = get_memories(scope="long_term")
+    memory_block = build_memory_block(preference, short_term, long_term)
 
     payload = {
         "model": model,

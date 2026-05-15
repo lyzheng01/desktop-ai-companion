@@ -71,6 +71,10 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    cursor.execute("PRAGMA table_info(memories)")
+    memory_columns = {row["name"] for row in cursor.fetchall()}
+    if "scope" not in memory_columns:
+        cursor.execute("ALTER TABLE memories ADD COLUMN scope TEXT DEFAULT 'long_term'")
 
     # 导入模型表
     cursor.execute("""
@@ -275,33 +279,47 @@ def clear_messages(session_id: Optional[str] = None):
 
 # ============== 记忆 CRUD ==============
 
-def save_memory(content: str, category: str = "fact", importance: int = 1):
+def save_memory(content: str, category: str = "fact", importance: int = 1, scope: str = "long_term"):
     """保存记忆"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO memories (content, category, importance)
-        VALUES (?, ?, ?)
-    """, (content, category, importance))
+        INSERT INTO memories (content, category, importance, scope)
+        VALUES (?, ?, ?, ?)
+    """, (content, category, importance, scope))
     conn.commit()
     conn.close()
 
 
-def get_memories(category: Optional[str] = None) -> List[Dict]:
+def get_memories(category: Optional[str] = None, scope: Optional[str] = None) -> List[Dict]:
     """获取记忆"""
     conn = get_connection()
     cursor = conn.cursor()
 
-    if category:
+    if category and scope:
         cursor.execute("""
-            SELECT id, content, category, importance, created_at
+            SELECT id, content, category, importance, scope, created_at
+            FROM memories
+            WHERE category = ? AND scope = ?
+            ORDER BY importance DESC, created_at DESC
+        """, (category, scope))
+    elif category:
+        cursor.execute("""
+            SELECT id, content, category, importance, scope, created_at
             FROM memories
             WHERE category = ?
             ORDER BY importance DESC, created_at DESC
         """, (category,))
+    elif scope:
+        cursor.execute("""
+            SELECT id, content, category, importance, scope, created_at
+            FROM memories
+            WHERE scope = ?
+            ORDER BY importance DESC, created_at DESC
+        """, (scope,))
     else:
         cursor.execute("""
-            SELECT id, content, category, importance, created_at
+            SELECT id, content, category, importance, scope, created_at
             FROM memories
             ORDER BY importance DESC, created_at DESC
         """)
@@ -315,10 +333,27 @@ def get_memories(category: Optional[str] = None) -> List[Dict]:
             "content": row["content"],
             "category": row["category"],
             "importance": row["importance"],
+            "scope": row["scope"],
             "created_at": row["created_at"]
         }
         for row in rows
     ]
+
+
+def delete_expired_short_term_memories(max_age_hours: int = 168):
+    """删除过期的短期记忆"""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        DELETE FROM memories
+        WHERE scope = 'short_term'
+          AND created_at < datetime('now', ?)
+    """,
+        (f'-{max_age_hours} hours',),
+    )
+    conn.commit()
+    conn.close()
 
 
 def delete_memory(memory_id: int):

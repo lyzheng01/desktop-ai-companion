@@ -2010,25 +2010,52 @@ function renderMemoryList(memories: MemoryItem[]) {
         return;
     }
 
-    memories.forEach((memory) => {
-        const row = document.createElement('div');
-        row.className = 'memory-row';
+    const grouped = {
+        preference: memories.filter((memory) => memory.scope === 'preference'),
+        short_term: memories.filter((memory) => memory.scope === 'short_term'),
+        long_term: memories.filter((memory) => memory.scope === 'long_term' || !memory.scope),
+    };
 
-        const text = document.createElement('span');
-        text.textContent = memory.content;
+    const labels: Record<string, string> = {
+        preference: '稳定偏好',
+        short_term: '近期记忆',
+        long_term: '长期记忆',
+    };
 
-        const button = document.createElement('button');
-        button.dataset.memoryId = String(memory.id);
-        button.textContent = '删除';
-        button.addEventListener('click', async () => {
-            await chatClient.deleteMemory(memory.id);
-            logProductEvent('memory_deleted', { id: memory.id });
-            await refreshMemoryList();
+    (Object.keys(grouped) as Array<keyof typeof grouped>).forEach((scope) => {
+        const items = grouped[scope];
+        if (items.length === 0) return;
+
+        const section = document.createElement('div');
+        section.className = 'memory-group';
+
+        const heading = document.createElement('div');
+        heading.className = 'memory-group-title';
+        heading.textContent = labels[scope];
+        section.appendChild(heading);
+
+        items.forEach((memory) => {
+            const row = document.createElement('div');
+            row.className = 'memory-row';
+
+            const text = document.createElement('span');
+            text.textContent = memory.content;
+
+            const button = document.createElement('button');
+            button.dataset.memoryId = String(memory.id);
+            button.textContent = '删除';
+            button.addEventListener('click', async () => {
+                await chatClient.deleteMemory(memory.id);
+                logProductEvent('memory_deleted', { id: memory.id });
+                await refreshMemoryList();
+            });
+
+            row.appendChild(text);
+            row.appendChild(button);
+            section.appendChild(row);
         });
 
-        row.appendChild(text);
-        row.appendChild(button);
-        container.appendChild(row);
+        container.appendChild(section);
     });
 }
 
