@@ -7,7 +7,7 @@ import * as PIXI from 'pixi.js';
 import { invoke } from '@tauri-apps/api/core';
 import { PhysicalPosition } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
-import { ChatClient, type ChatMessage, type MemoryItem } from './chat-client';
+import { ApiRequestError, ChatClient, type ChatMessage, type CompanionProfile, type ImportedModelItem, type MemoryItem } from './chat-client';
 import { HIYORI_ACTIONS, HIYORI_ACTION_KEYS, type HiyoriAction } from './hiyori-actions';
 
 // ============== 全局状态 ==============
@@ -64,6 +64,12 @@ let talkingSessionId = 0;
 let customAnimationTimer: number | null = null;
 let stageAnimationFrame: number | null = null;
 let actionIndicatorTimer: number | null = null;
+let firstRunRequired = false;
+let desktopFlowStarted = false;
+let bootstrapActiveCompanion: CompanionProfile | null = null;
+let pendingFirstRunCompanionId: number | null = null;
+let cachedCompanions: CompanionProfile[] = [];
+const FREE_COMPANION_LIMIT = 1;
 const chatClient = new ChatClient({
     apiEndpoint: 'http://localhost:8080/chat',
 });
@@ -80,6 +86,19 @@ const live2dModels: Record<string, string> = {
     natori_pro_zh: '/live2d/natori_pro_zh/runtime/natori_pro_t06.model3.json',
     ren_pro_zh: '/live2d/ren_pro_zh/runtime/ren.model3.json',
 };
+const modelDisplayNames: Record<string, string> = {
+    kei: 'Kei',
+    chitose: 'Chitose',
+    hiyori: 'Hiyori JP',
+    shizuku: 'Shizuku',
+    hiyori_pro_zh: 'Hiyori',
+    mao_pro_zh: 'Mao',
+    miara_pro_en: 'Miara',
+    miku_pro_jp: 'Miku',
+    natori_pro_zh: 'Natori',
+    ren_pro_zh: 'Ren',
+};
+const importedModelKeys = new Set<string>();
 let currentCharacter = 'hiyori_pro_zh';
 const characterBehaviors: Record<string, CharacterBehavior> = {
     kei: {
@@ -134,7 +153,10 @@ function setCompanionState(state: CompanionState) {
     console.log(`COMPANION_STATE: ${state}`);
 }
 
-async function loadAppSettings() {
+async function loadAppSettings(options: {
+    preserveBootstrapCompanion?: boolean;
+    activeCompanionOverride?: CompanionProfile | null;
+} = {}) {
     try {
         const response = await fetch('http://localhost:8080/config');
         if (!response.ok) {
@@ -156,6 +178,13 @@ async function loadAppSettings() {
             window_scale: data.window_scale ?? 1,
             character_scales: data.character_scales ?? {},
         };
+
+        if (options.activeCompanionOverride) {
+            applyActiveCompanion(options.activeCompanionOverride);
+        } else if (options.preserveBootstrapCompanion && bootstrapActiveCompanion) {
+            applyActiveCompanion(bootstrapActiveCompanion);
+        }
+
         currentCharacter = live2dModels[appSettings.character_type] ? appSettings.character_type : 'kei';
     } catch (error) {
         console.warn('Failed to load config, using defaults.', error);
@@ -185,16 +214,36 @@ function updateChatTitle() {
 }
 
 function getCharacterDisplayName(name: string) {
+    return modelDisplayNames[name] ?? name;
+}
+
+function getImportedModelKey(model: ImportedModelItem) {
+    return `imported:${model.id}`;
+}
+
+function syncImportedModelRegistry(models: ImportedModelItem[]) {
+    importedModelKeys.forEach((key) => {
+        delete live2dModels[key];
+        delete modelDisplayNames[key];
+    });
+    importedModelKeys.clear();
+
+    models.forEach((model) => {
+        const key = getImportedModelKey(model);
+        importedModelKeys.add(key);
+        live2dModels[key] = model.model_path;
+        modelDisplayNames[key] = model.name;
+    });
+}
+
+function getInteractionModeLabel(mode: string) {
     const labels: Record<string, string> = {
-        kei: 'Kei',
-        shizuku: 'Shizuku',
-        hiyori_pro_zh: 'Hiyori',
-        mao_pro_zh: 'Mao',
-        miara_pro_en: 'Miara',
-        miku_pro_jp: 'Miku',
-        natori_pro_zh: 'Natori',
+        work: '工作搭子',
+        daily: '日常陪伴',
+        quiet: '少打扰助手',
+        sleep: '睡前聊天伙伴',
     };
-    return labels[name] ?? name;
+    return labels[mode] ?? mode;
 }
 
 function getCurrentBehavior() {
@@ -216,6 +265,156 @@ function updateCharacterLabel() {
         label.textContent = getCharacterDisplayName(currentCharacter);
     }
     updateChatTitle();
+}
+
+function normalizeFirstRunPersonalityTags(tags: string[]) {
+    const uniqueTags = Array.from(new Set(tags));
+    const limitedTags = uniqueTags.slice(0, 3);
+    return limitedTags.length > 0 ? limitedTags : ['温柔'];
+}
+
+function syncFirstRunPersonalitySelection() {
+    const personalitySelect = document.getElementById('creator-personality-select') as HTMLSelectElement | null;
+    if (!personalitySelect) {
+        return ['温柔'];
+    }
+
+    const selectedTags = normalizeFirstRunPersonalityTags(
+        Array.from(personalitySelect.selectedOptions).map((option) => option.value),
+    );
+    Array.from(personalitySelect.options).forEach((option) => {
+        option.selected = selectedTags.includes(option.value);
+    });
+    return selectedTags;
+}
+
+function applyActiveCompanion(active: CompanionProfile) {
+    appSettings.character_name = active.name;
+    appSettings.character_type = active.character_type;
+    appSettings.personality = active.personality_tags.length > 0 ? active.personality_tags : ['温柔'];
+    appSettings.interaction_mode = active.interaction_mode;
+    currentCharacter = live2dModels[active.character_type] ? active.character_type : 'kei';
+}
+
+function isSingleCompanionBootstrapCandidate(companions: CompanionProfile[]) {
+    return companions.length === 1;
+}
+
+function getCreateCompanionErrorMessage(error: unknown) {
+    if (error instanceof ApiRequestError && error.status === 403) {
+        return '普通用户最多创建 1 个伙伴，请直接使用现有伙伴。';
+    }
+
+    return '创建伙伴失败，请稍后重试。';
+}
+
+async function determineCompanionBootstrapState() {
+    const active = await chatClient.loadActiveCompanion();
+    if (active) {
+        firstRunRequired = false;
+        bootstrapActiveCompanion = active;
+        pendingFirstRunCompanionId = active.id;
+        applyActiveCompanion(active);
+        return;
+    }
+
+    const companions = await chatClient.loadCompanions();
+    if (isSingleCompanionBootstrapCandidate(companions)) {
+        const existingCompanion = companions[0];
+        await chatClient.activateCompanion(existingCompanion.id);
+        firstRunRequired = false;
+        bootstrapActiveCompanion = { ...existingCompanion, is_active: true };
+        pendingFirstRunCompanionId = existingCompanion.id;
+        applyActiveCompanion(bootstrapActiveCompanion);
+        return;
+    }
+
+    firstRunRequired = companions.length === 0;
+    bootstrapActiveCompanion = null;
+    pendingFirstRunCompanionId = null;
+}
+
+function showBootstrapError(message: string) {
+    const banner = document.getElementById('bootstrap-error-banner');
+    if (banner) {
+        banner.textContent = message;
+        banner.classList.add('visible');
+    }
+}
+
+function hideBootstrapError() {
+    const banner = document.getElementById('bootstrap-error-banner');
+    if (banner) {
+        banner.textContent = '';
+        banner.classList.remove('visible');
+    }
+}
+
+function showFirstRunPanel() {
+    const panel = document.getElementById('first-run-panel');
+    panel?.classList.add('visible');
+}
+
+function hideFirstRunPanel() {
+    const panel = document.getElementById('first-run-panel');
+    panel?.classList.remove('visible');
+}
+
+function bindFirstRunCreator() {
+    const personalitySelect = document.getElementById('creator-personality-select') as HTMLSelectElement | null;
+    personalitySelect?.addEventListener('change', () => {
+        syncFirstRunPersonalitySelection();
+    });
+
+    const submitButton = document.getElementById('creator-submit-btn');
+    submitButton?.addEventListener('click', async () => {
+        const nameInput = document.getElementById('creator-name-input') as HTMLInputElement | null;
+        const characterSelect = document.getElementById('creator-character-select') as HTMLSelectElement | null;
+        const modeSelect = document.getElementById('creator-mode-select') as HTMLSelectElement | null;
+
+        const name = nameInput?.value.trim() || '小艾';
+        const characterType = characterSelect?.value || 'hiyori_pro_zh';
+        const personalityTags = syncFirstRunPersonalitySelection();
+        const interactionMode = modeSelect?.value || 'work';
+
+        submitButton.setAttribute('disabled', 'true');
+
+        try {
+            hideBootstrapError();
+            let companionId = pendingFirstRunCompanionId;
+            if (companionId === null) {
+                companionId = await chatClient.createCompanion({
+                    name,
+                    character_type: characterType,
+                    personality_tags: personalityTags,
+                    interaction_mode: interactionMode,
+                });
+                pendingFirstRunCompanionId = companionId;
+            }
+
+            await chatClient.activateCompanion(companionId);
+            pendingFirstRunCompanionId = null;
+            bootstrapActiveCompanion = {
+                id: companionId,
+                name,
+                character_type: characterType,
+                personality_tags: personalityTags,
+                interaction_mode: interactionMode,
+                is_active: true,
+            };
+            applyActiveCompanion(bootstrapActiveCompanion);
+            firstRunRequired = false;
+            hideFirstRunPanel();
+            await enterDesktopFlow();
+        } catch (error) {
+            console.error('Failed to create first companion.', error);
+            firstRunRequired = true;
+            showFirstRunPanel();
+            showBootstrapError(getCreateCompanionErrorMessage(error));
+        } finally {
+            submitButton.removeAttribute('disabled');
+        }
+    });
 }
 
 function syncCompanionSettingsForm() {
@@ -249,6 +448,143 @@ function syncCompanionSettingsForm() {
     const chatModelSelect = document.getElementById('chat-model-select') as HTMLSelectElement | null;
     if (chatModelSelect) {
         chatModelSelect.value = appSettings.chat_model;
+    }
+
+    const companionLimitNote = document.getElementById('companion-limit-note');
+    if (companionLimitNote) {
+        companionLimitNote.textContent = `普通用户最多创建 ${FREE_COMPANION_LIMIT} 个伙伴，更多伙伴为 VIP 功能。`;
+    }
+
+    const activeCompanionSummary = document.getElementById('active-companion-summary');
+    if (activeCompanionSummary) {
+        activeCompanionSummary.textContent = `当前伙伴：${appSettings.character_name} · ${getCharacterDisplayName(currentCharacter)} · ${getInteractionModeLabel(appSettings.interaction_mode)}`;
+    }
+}
+
+function renderCompanionList(companions: CompanionProfile[]) {
+    const list = document.getElementById('companion-list');
+    if (!list) {
+        return;
+    }
+
+    cachedCompanions = companions;
+    list.innerHTML = '';
+
+    const activeCompanion = companions.find((companion) => companion.is_active);
+    const activeCompanionSummary = document.getElementById('active-companion-summary');
+    if (activeCompanionSummary) {
+        if (activeCompanion) {
+            activeCompanionSummary.textContent = `当前伙伴：${activeCompanion.name} · ${getCharacterDisplayName(activeCompanion.character_type)} · ${getInteractionModeLabel(activeCompanion.interaction_mode)}`;
+        } else {
+            activeCompanionSummary.textContent = '当前伙伴：未选择';
+        }
+    }
+
+    companions.forEach((companion) => {
+        const row = document.createElement('div');
+        row.className = 'companion-list-item';
+
+        const meta = document.createElement('div');
+        meta.className = 'companion-list-meta';
+
+        const name = document.createElement('span');
+        name.className = 'companion-list-name';
+        name.textContent = companion.name;
+
+        const detail = document.createElement('span');
+        detail.className = 'companion-list-detail';
+        detail.textContent = `${getCharacterDisplayName(companion.character_type)} · ${getInteractionModeLabel(companion.interaction_mode)}`;
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'companion-switch-btn';
+        button.dataset.companionSwitchId = String(companion.id);
+        button.textContent = companion.is_active ? '当前使用中' : '切换';
+        button.disabled = companion.is_active;
+        button.addEventListener('click', () => {
+            void switchActiveCompanion(companion.id);
+        });
+
+        meta.appendChild(name);
+        meta.appendChild(detail);
+        row.appendChild(meta);
+        row.appendChild(button);
+        list.appendChild(row);
+    });
+
+    const createCompanionButton = document.getElementById('create-companion-btn') as HTMLButtonElement | null;
+    if (createCompanionButton) {
+        const canCreateCompanion = companions.length < FREE_COMPANION_LIMIT;
+        createCompanionButton.disabled = !canCreateCompanion;
+        createCompanionButton.textContent = canCreateCompanion ? '创建新伙伴' : '创建新伙伴（VIP）';
+    }
+}
+
+async function refreshCompanionList(activeCompanionId: number | null = null) {
+    try {
+        const companions = await chatClient.loadCompanions();
+        const nextCompanions = activeCompanionId === null
+            ? companions
+            : companions.map((companion) => ({
+                ...companion,
+                is_active: companion.id === activeCompanionId,
+            }));
+        renderCompanionList(nextCompanions);
+    } catch (error) {
+        console.warn('Failed to load companion list.', error);
+    }
+}
+
+function getConfirmedActiveCompanionOrThrow(activeCompanion: CompanionProfile | null, requestedCompanionId: number) {
+    if (!activeCompanion) {
+        throw new Error('Active companion confirmation returned null.');
+    }
+
+    if (activeCompanion.id !== requestedCompanionId) {
+        throw new Error(`Active companion confirmation mismatch: expected ${requestedCompanionId}, got ${activeCompanion.id}.`);
+    }
+
+    return activeCompanion;
+}
+
+async function switchActiveCompanion(companionId: number) {
+    const list = document.getElementById('companion-list');
+    const previousCompanions = cachedCompanions.map((companion) => ({ ...companion }));
+    list?.querySelectorAll<HTMLButtonElement>('.companion-switch-btn').forEach((button) => {
+        button.disabled = true;
+    });
+
+    try {
+        hideBootstrapError();
+        await chatClient.activateCompanion(companionId);
+        const activeCompanion = getConfirmedActiveCompanionOrThrow(
+            await chatClient.loadActiveCompanion(),
+            companionId,
+        );
+        bootstrapActiveCompanion = activeCompanion;
+        pendingFirstRunCompanionId = null;
+
+        await loadAppSettings({ activeCompanionOverride: activeCompanion });
+        updateCharacterLabel();
+        syncCompanionSettingsForm();
+
+        if (desktopFlowStarted) {
+            await loadLive2DModel();
+        }
+
+        const nextCompanions = (cachedCompanions.length > 0 ? cachedCompanions : await chatClient.loadCompanions()).map((companion) => ({
+            ...companion,
+            is_active: companion.id === activeCompanion.id,
+        }));
+        renderCompanionList(nextCompanions);
+    } catch (error) {
+        console.error('Failed to switch active companion.', error);
+        showBootstrapError('切换伙伴失败，请稍后重试。');
+        if (previousCompanions.length > 0) {
+            renderCompanionList(previousCompanions);
+        } else {
+            await refreshCompanionList();
+        }
     }
 }
 
@@ -292,6 +628,17 @@ function bindCompanionSettingsForm() {
     proactiveModeSelect?.addEventListener('change', () => {
         appSettings.proactive_mode = proactiveModeSelect.value;
         void saveAppSettings();
+    });
+
+    const createCompanionButton = document.getElementById('create-companion-btn') as HTMLButtonElement | null;
+    createCompanionButton?.addEventListener('click', () => {
+        if (createCompanionButton.disabled) {
+            return;
+        }
+
+        pendingFirstRunCompanionId = null;
+        hideBootstrapError();
+        showFirstRunPanel();
     });
 }
 
@@ -1064,17 +1411,28 @@ async function ensureCubismCore() {
     await new Promise<void>((resolve, reject) => {
         const existing = document.querySelector<HTMLScriptElement>('script[data-live2d-core="true"]');
         if (existing) {
-            existing.addEventListener('load', () => resolve(), { once: true });
-            existing.addEventListener('error', () => reject(new Error('Live2D Cubism Core script failed to load.')), { once: true });
-            return;
+            if (existing.dataset.loadState === 'failed') {
+                existing.remove();
+            } else {
+                existing.addEventListener('load', () => resolve(), { once: true });
+                existing.addEventListener('error', () => reject(new Error('Live2D Cubism Core script failed to load.')), { once: true });
+                return;
+            }
         }
 
         const script = document.createElement('script');
         script.src = cubismCoreUrl;
         script.async = true;
         script.dataset.live2dCore = 'true';
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error('Live2D Cubism Core script failed to load.'));
+        script.dataset.loadState = 'loading';
+        script.onload = () => {
+            script.dataset.loadState = 'loaded';
+            resolve();
+        };
+        script.onerror = () => {
+            script.dataset.loadState = 'failed';
+            reject(new Error('Live2D Cubism Core script failed to load.'));
+        };
         document.head.appendChild(script);
     });
 
@@ -1088,7 +1446,9 @@ async function ensureCubismCore() {
 async function initPixi() {
     // 创建 PIXI 应用
     (window as Window & { PIXI?: typeof PIXI }).PIXI = PIXI;
-    await loadAppSettings();
+    await loadAppSettings({ preserveBootstrapCompanion: true });
+    updateCharacterLabel();
+    syncCompanionSettingsForm();
 
     app = new PIXI.Application({
         width: 400,
@@ -1109,6 +1469,21 @@ async function initPixi() {
 
     // 加载 Live2D 模型
     await loadLive2DModel();
+}
+
+async function enterDesktopFlow() {
+    if (desktopFlowStarted) {
+        return;
+    }
+
+    setCompanionState('idle');
+    try {
+        await initPixi();
+        desktopFlowStarted = true;
+    } catch (error) {
+        desktopFlowStarted = false;
+        throw error;
+    }
 }
 
 async function loadLive2DModel() {
@@ -1267,6 +1642,7 @@ function openSettingsPanel() {
     updateCharacterLabel();
     updateScaleControls();
     syncCompanionSettingsForm();
+    void refreshCompanionList();
     logProductEvent('settings_opened', { character: currentCharacter });
     void refreshMemoryList();
 }
@@ -1443,6 +1819,132 @@ async function refreshMemoryList() {
     renderMemoryList(memories);
 }
 
+function renderBuiltInModelList() {
+    const list = document.getElementById('builtin-model-list');
+    if (!list) return;
+
+    list.innerHTML = '';
+    Object.keys(live2dModels)
+        .filter((key) => !importedModelKeys.has(key))
+        .forEach((key) => {
+            const row = document.createElement('div');
+            row.className = 'model-row';
+
+            const meta = document.createElement('div');
+            meta.className = 'model-meta';
+
+            const name = document.createElement('span');
+            name.className = 'model-name';
+            name.textContent = getCharacterDisplayName(key);
+
+            const detail = document.createElement('span');
+            detail.className = 'model-detail';
+            detail.textContent = key === currentCharacter ? '当前使用中' : '内置模型';
+
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.textContent = key === currentCharacter ? '当前使用中' : '切换';
+            button.disabled = key === currentCharacter;
+            button.addEventListener('click', () => {
+                closeModelPanel();
+                switchCharacter(key);
+                void refreshModelPanel();
+            });
+
+            meta.appendChild(name);
+            meta.appendChild(detail);
+            row.appendChild(meta);
+            row.appendChild(button);
+            list.appendChild(row);
+        });
+}
+
+function renderImportedModelList(models: ImportedModelItem[]) {
+    const list = document.getElementById('imported-model-list');
+    if (!list) return;
+
+    list.innerHTML = '';
+    if (models.length === 0) {
+        list.textContent = '暂时还没有导入模型。';
+        return;
+    }
+
+    models.forEach((model) => {
+        const key = getImportedModelKey(model);
+        const row = document.createElement('div');
+        row.className = 'model-row';
+
+        const meta = document.createElement('div');
+        meta.className = 'model-meta';
+
+        const name = document.createElement('span');
+        name.className = 'model-name';
+        name.textContent = model.name;
+
+        const detail = document.createElement('span');
+        detail.className = 'model-detail';
+        detail.textContent = key === currentCharacter ? '当前使用中 · 导入模型' : '导入模型';
+
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = key === currentCharacter ? '当前使用中' : '切换';
+        button.disabled = key === currentCharacter;
+        button.addEventListener('click', () => {
+            closeModelPanel();
+            switchCharacter(key);
+            void refreshModelPanel();
+        });
+
+        meta.appendChild(name);
+        meta.appendChild(detail);
+        row.appendChild(meta);
+        row.appendChild(button);
+        list.appendChild(row);
+    });
+}
+
+async function refreshModelPanel() {
+    const imported = await chatClient.loadImportedModels();
+    syncImportedModelRegistry(imported);
+
+    const summary = document.getElementById('active-model-summary');
+    if (summary) {
+        summary.textContent = `${appSettings.character_name} · ${getCharacterDisplayName(currentCharacter)}`;
+    }
+
+    renderBuiltInModelList();
+    renderImportedModelList(imported);
+}
+
+function openModelPanel() {
+    const panel = document.getElementById('model-panel');
+    if (panel) {
+        panel.classList.add('visible');
+    }
+    void refreshModelPanel();
+}
+
+function closeModelPanel() {
+    const panel = document.getElementById('model-panel');
+    if (panel) {
+        panel.classList.remove('visible');
+    }
+}
+
+async function promptImportModel() {
+    const modelPath = window.prompt('请输入已解压模型的 model3.json 完整路径');
+    if (!modelPath) return;
+
+    const name = modelPath.split(/[/\\]/).slice(-2, -1)[0] || 'Imported Model';
+    try {
+        await chatClient.importModel({ name, model_path: modelPath });
+        await refreshModelPanel();
+    } catch (error) {
+        console.error('Failed to import model.', error);
+        alert('导入模型失败，请确认你提供的是已解压的 model3.json 路径。');
+    }
+}
+
 // ============== 右键菜单 ==============
 
 let contextMenuVisible = false;
@@ -1482,13 +1984,10 @@ function bindContextMenuActions() {
     const menu = document.getElementById('context-menu');
     if (!menu) return;
 
-    menu.querySelectorAll<HTMLElement>('[data-character]').forEach((button) => {
-        button.addEventListener('click', () => {
-            const name = button.dataset.character;
-            if (name) {
-                switchCharacter(name);
-            }
-        });
+    const modelPickerButton = menu.querySelector<HTMLElement>('[data-action="model-picker"]');
+    modelPickerButton?.addEventListener('click', () => {
+        hideContextMenu();
+        openModelPanel();
     });
 
     const hideButton = menu.querySelector<HTMLElement>('[data-action="hide"]');
@@ -1558,11 +2057,10 @@ document.addEventListener('keydown', (e) => {
 
 // ============== 初始化 ==============
 
-window.addEventListener('DOMContentLoaded', () => {
-    setCompanionState('idle');
-    initPixi();
+window.addEventListener('DOMContentLoaded', async () => {
     bindContextMenuActions();
     bindCharacterInteractions();
+    bindFirstRunCreator();
 
     // 绑定聊天窗口关闭按钮
     const closeBtn = document.querySelector('.close-btn');
@@ -1580,6 +2078,16 @@ window.addEventListener('DOMContentLoaded', () => {
     if (settingsCloseBtn) {
         settingsCloseBtn.addEventListener('click', closeSettingsPanel);
     }
+
+    const modelCloseBtn = document.querySelector('.model-close-btn');
+    if (modelCloseBtn) {
+        modelCloseBtn.addEventListener('click', closeModelPanel);
+    }
+
+    const importModelBtn = document.getElementById('import-model-btn');
+    importModelBtn?.addEventListener('click', () => {
+        void promptImportModel();
+    });
 
     bindDraggablePanel('#chat-window', '.chat-header');
     bindDraggablePanel('#settings-panel', '.settings-header');
@@ -1608,4 +2116,21 @@ window.addEventListener('DOMContentLoaded', () => {
     updateHideMenuLabel();
     updateChatTitle();
     syncCompanionSettingsForm();
+    hideBootstrapError();
+
+    try {
+        await refreshModelPanel();
+        await determineCompanionBootstrapState();
+        if (firstRunRequired) {
+            showFirstRunPanel();
+            return;
+        }
+
+        hideFirstRunPanel();
+        await enterDesktopFlow();
+    } catch (error) {
+        console.error('Failed to determine companion bootstrap state.', error);
+        hideFirstRunPanel();
+        showBootstrapError('伙伴加载失败，请确认后端服务可用后再重试。');
+    }
 });

@@ -3,6 +3,7 @@ Desktop AI Companion - Python 后端服务
 提供 AI 对话接口和数据库访问
 """
 import os
+import shutil
 import sys
 from pathlib import Path
 
@@ -12,14 +13,27 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 from typing import List
 import uvicorn
 
 from app.config import AppConfig, TIME_PATTERN, get_config, save_config as persist_config
-from app.db import clear_messages, delete_memory, get_memories, get_messages, save_memory, save_message
+from app.db import (
+    clear_messages,
+    create_companion,
+    create_imported_model,
+    delete_memory,
+    get_active_companion,
+    get_memories,
+    get_messages,
+    list_imported_models,
+    list_companions,
+    save_memory,
+    save_message,
+    set_active_companion,
+)
 
 # ============== 数据模型 ==============
 
@@ -39,6 +53,18 @@ class MemoryCreateRequest(BaseModel):
     content: str
     category: str = "preference"
     importance: int = 1
+
+
+class CompanionCreateRequest(BaseModel):
+    name: str
+    character_type: str
+    personality_tags: list[str] = Field(default_factory=list)
+    interaction_mode: str = "work"
+
+
+class ImportedModelRequest(BaseModel):
+    model_path: str
+    name: str
 
 class Config(BaseModel):
     user_nickname: str = "小伙伴"
@@ -106,8 +132,24 @@ class ConfigUpdate(BaseModel):
         return value
 
 
+def apply_active_companion(current: AppConfig) -> AppConfig:
+    active_companion = get_active_companion()
+    config_data = current.__dict__.copy()
+    if active_companion is not None:
+        config_data["character_name"] = active_companion["name"]
+        config_data["character_type"] = active_companion["character_type"]
+        config_data["personality"] = active_companion["personality_tags"]
+        config_data["interaction_mode"] = active_companion["interaction_mode"]
+    return AppConfig(**config_data)
+
+
 def to_api_config(current: AppConfig) -> Config:
-    return Config.model_validate(current.__dict__)
+    config_data = apply_active_companion(current).__dict__.copy()
+    return Config.model_validate(config_data)
+
+
+def is_vip_user() -> bool:
+    return False
 
 # ============== FastAPI 应用 ==============
 
@@ -138,7 +180,7 @@ async def chat(request: ChatRequest):
     """
     save_message("user", request.message)
 
-    current = get_config()
+    current = apply_active_companion(get_config())
     response_content = shape_companion_reply(
         request.message,
         generate_chat_response(request.message, request.context, current),
@@ -153,6 +195,61 @@ async def chat(request: ChatRequest):
 async def get_config_endpoint():
     """获取配置"""
     return to_api_config(get_config())
+
+
+@app.get("/companions")
+async def get_companions():
+    return list_companions()
+
+
+@app.get("/companions/active")
+async def get_active_companion_endpoint():
+    return get_active_companion()
+
+
+@app.post("/companions")
+async def create_companion_endpoint(payload: CompanionCreateRequest):
+    if len(list_companions()) >= 1 and not is_vip_user():
+        raise HTTPException(status_code=403, detail="Free tier allows only one companion")
+
+    companion_id = create_companion(
+        name=payload.name,
+        character_type=payload.character_type,
+        personality_tags=payload.personality_tags,
+        interaction_mode=payload.interaction_mode,
+    )
+    return {"status": "ok", "id": companion_id}
+
+
+@app.post("/companions/{companion_id}/activate")
+async def activate_companion(companion_id: int):
+    if not any(companion["id"] == companion_id for companion in list_companions()):
+        raise HTTPException(status_code=404, detail="Companion not found")
+    set_active_companion(companion_id)
+    return {"status": "ok"}
+
+
+@app.get("/models/imported")
+async def get_imported_models_endpoint():
+    return list_imported_models()
+
+
+@app.post("/models/imported")
+async def import_model(payload: ImportedModelRequest):
+    source_model = Path(payload.model_path).expanduser()
+    if not source_model.exists() or not source_model.name.endswith('.model3.json'):
+        raise HTTPException(status_code=400, detail="Invalid model3.json path")
+
+    source_dir = source_model.parent
+    slug = ''.join(ch.lower() if ch.isalnum() else '-' for ch in payload.name).strip('-') or 'imported-model'
+    target_root = PROJECT_ROOT / 'assets' / 'live2d' / 'imported' / slug
+    if target_root.exists():
+        shutil.rmtree(target_root)
+    shutil.copytree(source_dir, target_root)
+
+    public_model_path = f"/live2d/imported/{slug}/{source_model.name}"
+    model_id = create_imported_model(payload.name, public_model_path)
+    return {"status": "ok", "id": model_id, "model_path": public_model_path}
 
 @app.post("/config", response_model=Config)
 async def save_config_endpoint(config: ConfigUpdate):

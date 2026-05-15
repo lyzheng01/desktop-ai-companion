@@ -6,6 +6,7 @@ import pytest
 import app.config as config_module
 import app.db as db_module
 from app.config import AppConfig, save_config
+from app.db import create_companion, set_active_companion
 from app.db import clear_messages, get_messages
 from backend.server import app
 
@@ -313,6 +314,67 @@ def test_config_get_sanitizes_invalid_persisted_character_scales_shape():
 
     assert response.status_code == 200
     assert response.json()["character_scales"] == {}
+
+    reset_live_config()
+
+
+def test_config_projects_active_companion_identity():
+    reset_live_config(
+        AppConfig(
+            character_name="全局角色",
+            character_type="global",
+            personality=["冷静"],
+            interaction_mode="study",
+        )
+    )
+
+    companion_id = create_companion(
+        name="小艾",
+        character_type="hiyori_pro_zh",
+        personality_tags=["温柔", "治愈"],
+        interaction_mode="work",
+        is_active=False,
+    )
+    set_active_companion(companion_id)
+
+    response = client.get("/config")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["character_name"] == "小艾"
+    assert data["character_type"] == "hiyori_pro_zh"
+    assert data["personality"] == ["温柔", "治愈"]
+    assert data["interaction_mode"] == "work"
+
+    reset_live_config()
+
+
+def test_chat_uses_active_companion_identity_for_reply_shaping():
+    reset_live_config(
+        AppConfig(
+            user_display_name="阿泽",
+            character_name="全局角色",
+            character_type="global",
+            personality=["冷静"],
+            interaction_mode="study",
+        )
+    )
+
+    companion_id = create_companion(
+        name="小艾",
+        character_type="hiyori_pro_zh",
+        personality_tags=["温柔"],
+        interaction_mode="work",
+        is_active=False,
+    )
+    set_active_companion(companion_id)
+
+    response = client.post("/chat", json={"message": "我今天有点累", "context": []})
+
+    assert response.status_code == 200
+    content = response.json()["content"]
+    assert content.startswith("阿泽，辛苦啦。小艾在这儿陪你一下。")
+    assert "全局角色" not in content
 
     reset_live_config()
 

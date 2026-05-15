@@ -26,6 +26,100 @@
             justify-content: flex-end;
         }
 
+        #first-run-panel {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(15, 23, 42, 0.72);
+            backdrop-filter: blur(12px);
+            z-index: 4000;
+        }
+
+        #first-run-panel.visible {
+            display: flex;
+        }
+
+        #bootstrap-error-banner {
+            position: fixed;
+            top: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: none;
+            width: min(calc(100% - 32px), 520px);
+            padding: 14px 16px;
+            border-radius: 14px;
+            background: rgba(127, 29, 29, 0.94);
+            color: white;
+            box-shadow: 0 16px 40px rgba(15, 23, 42, 0.24);
+            z-index: 4100;
+        }
+
+        #bootstrap-error-banner.visible {
+            display: block;
+        }
+
+        .first-run-card {
+            width: min(100%, 420px);
+            padding: 24px;
+            border-radius: 20px;
+            background: rgba(255, 255, 255, 0.96);
+            box-shadow: 0 20px 48px rgba(15, 23, 42, 0.28);
+        }
+
+        .first-run-card h2 {
+            font-size: 24px;
+            color: #1f2937;
+            margin-bottom: 8px;
+        }
+
+        .first-run-card p {
+            font-size: 14px;
+            line-height: 1.6;
+            color: #667085;
+            margin-bottom: 16px;
+        }
+
+        .first-run-card label {
+            display: block;
+            margin-top: 12px;
+            margin-bottom: 6px;
+            font-size: 12px;
+            color: #667085;
+        }
+
+        .first-run-card input,
+        .first-run-card select,
+        .first-run-card button {
+            width: 100%;
+            border-radius: 12px;
+            font-size: 14px;
+        }
+
+        .first-run-card input,
+        .first-run-card select {
+            border: 1px solid #d8def5;
+            background: white;
+            color: #333;
+            padding: 12px 14px;
+        }
+
+        #creator-personality-select {
+            min-height: 120px;
+        }
+
+        #creator-submit-btn {
+            margin-top: 18px;
+            border: none;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 14px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
         /* Live2D 角色容器 */
         #character-container {
             position: fixed;
@@ -254,6 +348,97 @@
             color: #667085;
         }
 
+        #companion-limit-note {
+            margin-top: 8px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: #eef2ff;
+            color: #4452b8;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        #active-companion-summary {
+            margin-top: 8px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: white;
+            border: 1px solid #d8def5;
+            color: #4452b8;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        #create-companion-btn {
+            width: 100%;
+            margin-top: 10px;
+            border: none;
+            border-radius: 10px;
+            background: #e9edff;
+            color: #4452b8;
+            padding: 10px 12px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        #create-companion-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        #companion-list {
+            display: grid;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .companion-list-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: white;
+            border: 1px solid #d8def5;
+        }
+
+        .companion-list-meta {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .companion-list-name {
+            display: block;
+            color: #1f2937;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .companion-list-detail {
+            display: block;
+            color: #667085;
+            font-size: 12px;
+        }
+
+        .companion-switch-btn {
+            border: none;
+            border-radius: 999px;
+            background: #e9edff;
+            color: #4452b8;
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .companion-switch-btn:disabled {
+            background: #eef2ff;
+            color: #667085;
+            cursor: default;
+        }
+
         .settings-item input,
         .settings-item select {
             width: 100%;
@@ -447,10 +632,110 @@
             background: #e0e0e0;
             margin: 6px 0;
         }
+
+        #model-panel {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            width: 360px;
+            max-height: calc(100vh - 40px);
+            background: rgba(255,255,255,0.96);
+            border-radius: 16px;
+            box-shadow: 0 10px 32px rgba(0,0,0,0.18);
+            backdrop-filter: blur(12px);
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            z-index: 1150;
+        }
+
+        #model-panel.visible {
+            display: flex;
+        }
+
+        .model-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 0;
+            border-bottom: 1px solid #eceff7;
+        }
+
+        .model-meta {
+            display: grid;
+            gap: 2px;
+        }
+
+        .model-name {
+            font-weight: 600;
+            color: #1d2939;
+        }
+
+        .model-detail {
+            font-size: 12px;
+            color: #667085;
+        }
+
+        .model-row button,
+        #import-model-btn {
+            border: none;
+            border-radius: 10px;
+            background: #e9edff;
+            color: #4452b8;
+            padding: 8px 10px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .model-row button:disabled {
+            cursor: default;
+            background: #eef2f6;
+            color: #98a2b3;
+        }
     </style>
 </head>
 <body data-companion-state="idle">
     <div id="app">
+        <div id="bootstrap-error-banner" role="alert"></div>
+
+        <div id="first-run-panel">
+            <div class="first-run-card">
+                <h2>创建你的伙伴</h2>
+                <p>先创建一个默认伙伴，桌面陪伴体验就会开始。</p>
+
+                <label for="creator-character-select">选择形象</label>
+                <select id="creator-character-select">
+                    <option value="hiyori_pro_zh">Hiyori</option>
+                    <option value="natori_pro_zh">Natori</option>
+                    <option value="mao_pro_zh">Mao</option>
+                    <option value="kei">Kei</option>
+                </select>
+
+                <label for="creator-name-input">伙伴名字</label>
+                <input id="creator-name-input" type="text" value="小艾" maxlength="20">
+
+                <label for="creator-personality-select">性格（可多选）</label>
+                <select id="creator-personality-select" multiple>
+                    <option value="温柔" selected>温柔</option>
+                    <option value="安静">安静</option>
+                    <option value="元气">元气</option>
+                    <option value="理性">理性</option>
+                    <option value="治愈">治愈</option>
+                </select>
+
+                <label for="creator-mode-select">陪伴模式</label>
+                <select id="creator-mode-select">
+                    <option value="work">工作搭子</option>
+                    <option value="daily">日常陪伴</option>
+                    <option value="quiet">少打扰助手</option>
+                    <option value="sleep">睡前聊天伙伴</option>
+                </select>
+
+                <button id="creator-submit-btn" type="button">完成创建</button>
+            </div>
+        </div>
+
         <!-- Live2D 角色容器 -->
         <div id="character-container">
             <div id="character-hit-area"></div>
@@ -482,6 +767,10 @@
                 <div class="settings-item">
                     <strong>陪伴设定</strong>
                     当前模型：<span id="current-character-label">Kei</span>
+                    <div id="active-companion-summary">当前伙伴：小艾 · Hiyori · 工作搭子</div>
+                    <button id="create-companion-btn" type="button">创建新伙伴</button>
+                    <div id="companion-list"></div>
+                    <div id="companion-limit-note">普通用户最多创建 1 个伙伴，更多伙伴为 VIP 功能。</div>
 
                     <label for="character-name-input">虚拟人名字</label>
                     <input id="character-name-input" type="text" value="小艾" maxlength="20">
@@ -542,16 +831,31 @@
             </div>
         </div>
 
+        <div id="model-panel">
+            <div class="settings-header">
+                <h3>选择模型</h3>
+                <button class="model-close-btn">×</button>
+            </div>
+            <div class="settings-body">
+                <div class="settings-item">
+                    <strong>当前模型</strong>
+                    <div id="active-model-summary"></div>
+                </div>
+                <div class="settings-item">
+                    <strong>内置模型</strong>
+                    <div id="builtin-model-list"></div>
+                </div>
+                <div class="settings-item">
+                    <strong>导入模型</strong>
+                    <button id="import-model-btn" type="button">导入已解压模型</button>
+                    <div id="imported-model-list"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- 右键菜单 -->
         <div id="context-menu">
-            <button data-character="hiyori_pro_zh">🌤 Hiyori</button>
-            <button data-character="natori_pro_zh">🌼 Natori</button>
-            <button data-character="mao_pro_zh">🐾 Mao</button>
-            <div class="separator"></div>
-            <button data-character="kei">📦 Kei</button>
-            <button data-character="shizuku">💧 Shizuku</button>
-            <button data-character="miara_pro_en">✨ Miara</button>
-            <button data-character="miku_pro_jp">🎤 Miku</button>
+            <button data-action="model-picker">🗂 选择模型</button>
             <div class="separator"></div>
             <button data-action="hide">🙈 隐藏</button>
             <button data-action="settings">⚙️ 设置</button>

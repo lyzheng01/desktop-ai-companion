@@ -22,6 +22,35 @@ export interface MemoryItem {
     created_at: string;
 }
 
+export interface CompanionProfile {
+    id: number;
+    name: string;
+    character_type: string;
+    personality_tags: string[];
+    interaction_mode: string;
+    is_active: boolean;
+}
+
+export interface ImportedModelItem {
+    id: number;
+    name: string;
+    model_path: string;
+    source: string;
+    is_active: boolean;
+}
+
+export class ApiRequestError extends Error {
+    status: number;
+    detail: string | null;
+
+    constructor(message: string, status: number, detail: string | null = null) {
+        super(message);
+        this.name = 'ApiRequestError';
+        this.status = status;
+        this.detail = detail;
+    }
+}
+
 export class ChatClient {
     private messages: ChatMessage[] = [];
     private config: ChatConfig;
@@ -102,6 +131,71 @@ export class ChatClient {
         }
     }
 
+    public async loadCompanions(): Promise<CompanionProfile[]> {
+        const response = await fetch(this.getEndpointUrl('companions'));
+        if (!response.ok) {
+            throw new Error(`Companions request failed: ${response.status}`);
+        }
+        return await response.json() as CompanionProfile[];
+    }
+
+    public async loadActiveCompanion(): Promise<CompanionProfile | null> {
+        const response = await fetch(this.getEndpointUrl('companions-active'));
+        if (response.status === 404) {
+            return null;
+        }
+        if (!response.ok) {
+            throw new Error(`Active companion request failed: ${response.status}`);
+        }
+        return await response.json() as CompanionProfile | null;
+    }
+
+    public async createCompanion(payload: {
+        name: string;
+        character_type: string;
+        personality_tags: string[];
+        interaction_mode: string;
+    }): Promise<number> {
+        const response = await fetch(this.getEndpointUrl('companions'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            throw await this.buildApiRequestError('Create companion failed', response);
+        }
+        const data = await response.json() as { id: number };
+        return data.id;
+    }
+
+    public async activateCompanion(companionId: number): Promise<void> {
+        const response = await fetch(`${this.getEndpointUrl('companions')}/${companionId}/activate`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            throw new Error(`Activate companion failed: ${response.status}`);
+        }
+    }
+
+    public async loadImportedModels(): Promise<ImportedModelItem[]> {
+        const response = await fetch(this.getEndpointUrl('models-imported'));
+        if (!response.ok) {
+            throw new Error(`Imported models request failed: ${response.status}`);
+        }
+        return await response.json() as ImportedModelItem[];
+    }
+
+    public async importModel(payload: { name: string; model_path: string }): Promise<void> {
+        const response = await fetch(this.getEndpointUrl('models-imported'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+            throw await this.buildApiRequestError('Import model failed', response);
+        }
+    }
+
     // 调用 AI 接口
     private async callAI(userMessage: string): Promise<ChatMessage> {
         // 方案 1: 调用本地 Python 后端
@@ -153,18 +247,42 @@ export class ChatClient {
         return responses[Math.floor(Math.random() * responses.length)];
     }
 
-    private getEndpointUrl(kind: 'chat' | 'history' | 'memory'): string {
+    private getEndpointUrl(kind: 'chat' | 'history' | 'memory' | 'companions' | 'companions-active' | 'models-imported'): string {
         const endpoint = new URL(this.config.apiEndpoint || 'http://localhost:8080/chat');
         const pathSegments = endpoint.pathname.split('/').filter(Boolean);
 
+        const targetPath = {
+            chat: 'chat',
+            history: 'history',
+            memory: 'memory',
+            companions: 'companions',
+            'companions-active': 'companions/active',
+            'models-imported': 'models/imported',
+        }[kind];
+
         if (pathSegments.length === 0) {
-            endpoint.pathname = `/${kind}`;
+            endpoint.pathname = `/${targetPath}`;
             return endpoint.toString();
         }
 
-        pathSegments[pathSegments.length - 1] = kind;
+        pathSegments[pathSegments.length - 1] = targetPath;
         endpoint.pathname = `/${pathSegments.join('/')}`;
         return endpoint.toString();
+    }
+
+    private async buildApiRequestError(message: string, response: Response): Promise<ApiRequestError> {
+        let detail: string | null = null;
+
+        try {
+            const data = await response.json() as { detail?: unknown };
+            if (typeof data.detail === 'string') {
+                detail = data.detail;
+            }
+        } catch {
+            detail = null;
+        }
+
+        return new ApiRequestError(`${message}: ${response.status}`, response.status, detail);
     }
 
     // 获取历史消息
