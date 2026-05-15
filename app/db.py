@@ -365,7 +365,7 @@ def list_imported_models() -> List[Dict]:
     return [
         {
             "id": row["id"],
-            "name": row["name"],
+            "name": _clean_imported_model_name(row["id"], row["name"], row["model_path"]),
             "model_path": row["model_path"],
             "source": row["source"],
             "is_active": bool(row["is_active"]),
@@ -373,6 +373,70 @@ def list_imported_models() -> List[Dict]:
         }
         for row in rows
     ]
+
+
+def _clean_imported_model_name(model_id: int, raw_name: str, model_path: str) -> str:
+    """清洗导入模型显示名，避免把乱码直接暴露给用户。"""
+    lowered_path = model_path.lower()
+    if 'tororo.model3.json' in lowered_path:
+        return 'Tororo'
+    if 'hijiki.model3.json' in lowered_path:
+        return 'Hijiki'
+
+    parent_slug = Path(model_path).parent.name
+    parts = [part for part in parent_slug.split('---') if part]
+    primary = parts[0] if parts else Path(model_path).stem
+    secondary = parts[1] if len(parts) > 1 else Path(model_path).stem
+
+    alias_map = {
+        '11月椿': 'Tsubaki',
+        '散兵-流浪者免费模型': 'Wanderer',
+        '符玄': 'Fu Xuan',
+        '长离带水印': 'Changli',
+        '魔女': 'Witch',
+        'raiga-free': 'Raiga',
+        'haru-greeter-pro-jp': 'Haru',
+        'rice-pro-en': 'Rice',
+        'gantzert-felixander': 'Felixander',
+        'toki20220227': 'Toki',
+        'tororo-hijiki': 'Tororo / Hijiki',
+        'neko': 'Neko',
+        'nicole': 'Nicole',
+        'epsilon': 'Epsilon',
+        'izumi': 'Izumi',
+        'kitu17': 'KITU17',
+        'chino11': 'Chino11',
+        'xmas': 'Tonakai',
+        'shizuku-imported': 'Shizuku',
+    }
+
+    for key, value in alias_map.items():
+        if primary.startswith(key):
+            base = value
+            break
+    else:
+        cleaned_primary = primary.replace('带水印', '').replace('免费模型', '').strip('-_ ')
+        if cleaned_primary and '�' not in cleaned_primary:
+            base = cleaned_primary
+        else:
+            cleaned_secondary = secondary.replace('-model3', '').replace('_', ' ').strip('-_ ')
+            base = cleaned_secondary if cleaned_secondary and '�' not in cleaned_secondary else f'导入模型 {model_id}'
+
+    if base == 'Chino11':
+        if raw_name.endswith('- 1'):
+            return 'Chino11 3.0'
+        if raw_name.endswith('- 2'):
+            return 'Chino11 3.3'
+        if raw_name.endswith('- 3'):
+            return 'Chino11 4.0'
+
+    if base == 'Tororo / Hijiki':
+        if 'hijiki' in model_path.lower():
+            return 'Hijiki'
+        if 'tororo' in model_path.lower():
+            return 'Tororo'
+
+    return base
 
 
 # 初始化数据库

@@ -5,7 +5,7 @@
 
 import * as PIXI from 'pixi.js';
 import { invoke } from '@tauri-apps/api/core';
-import { PhysicalPosition } from '@tauri-apps/api/dpi';
+import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { ApiRequestError, ChatClient, type ChatMessage, type CompanionProfile, type ImportedModelItem, type MemoryItem } from './chat-client';
 import { HIYORI_ACTIONS, HIYORI_ACTION_KEYS, type HiyoriAction } from './hiyori-actions';
@@ -64,16 +64,20 @@ let talkingSessionId = 0;
 let customAnimationTimer: number | null = null;
 let stageAnimationFrame: number | null = null;
 let actionIndicatorTimer: number | null = null;
+let bubbleTimer: number | null = null;
+let lastBubbleLine = '';
 let firstRunRequired = false;
 let desktopFlowStarted = false;
 let bootstrapActiveCompanion: CompanionProfile | null = null;
 let pendingFirstRunCompanionId: number | null = null;
 let cachedCompanions: CompanionProfile[] = [];
 const FREE_COMPANION_LIMIT = 1;
+const BASE_WINDOW_WIDTH = 400;
+const BASE_WINDOW_HEIGHT = 600;
 const chatClient = new ChatClient({
     apiEndpoint: 'http://localhost:8080/chat',
 });
-const cubismCoreUrl = 'https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js';
+const cubismCoreUrl = '/vendor/live2dcubismcore.min.js';
 const live2dModels: Record<string, string> = {
     kei: '/live2d/kei_en/kei_basic_free/runtime/kei_basic_free.model3.json',
     chitose: '/live2d/chitose/chitose_t02.model3.json',
@@ -123,6 +127,36 @@ const characterBehaviors: Record<string, CharacterBehavior> = {
         supportsRandomExpression: false,
     },
 };
+const bubbleLines = {
+    gentle: [
+        '我在呢。',
+        '怎么啦？',
+        '嗯，我听到了。',
+        '有事找我吗？',
+        '我在旁边陪着你。',
+    ],
+    cheerful: [
+        '嘿嘿，你点到我啦。',
+        '我有在认真看你哦。',
+        '今天也想陪你一下。',
+        '诶嘿，我在这儿。',
+        '要不要和我说一句话？',
+    ],
+    shy: [
+        '欸？',
+        '突然点我呀。',
+        '唔，被发现了。',
+        '嗯？怎么啦？',
+        '我还以为你在忙呢。',
+    ],
+    calm: [
+        '我会在这儿待着的。',
+        '慢慢来也没关系。',
+        '如果你想说话，我在。',
+        '先陪你一下。',
+        '我没有走开哦。',
+    ],
+} as const;
 let appSettings: AppSettings = {
     user_nickname: '小伙伴',
     user_display_name: '你',
@@ -219,6 +253,90 @@ function getCharacterDisplayName(name: string) {
 
 function getImportedModelKey(model: ImportedModelItem) {
     return `imported:${model.id}`;
+}
+
+function getGeneratedPreviewPath(modelKey: string) {
+    if (modelKey.startsWith('imported:')) {
+        const importedId = modelKey.split(':')[1] || 'unknown';
+        return `/model-previews/imported/${importedId}.png`;
+    }
+    return `/model-previews/builtin/${modelKey}.png`;
+}
+
+function getModelPreviewCandidates(modelPath: string) {
+    const normalized = modelPath.replace(/\\/g, '/');
+    const slashIndex = normalized.lastIndexOf('/');
+    const dir = slashIndex >= 0 ? normalized.slice(0, slashIndex) : normalized;
+    const file = slashIndex >= 0 ? normalized.slice(slashIndex + 1) : normalized;
+    const stem = file.replace(/\.model3\.json$/i, '');
+
+    const candidates = [
+        `${dir}/icon.png`,
+        `${dir}/icon.jpg`,
+        `${dir}/preview.png`,
+        `${dir}/preview.jpg`,
+        `${dir}/${stem}.png`,
+        `${dir}/${stem}.jpg`,
+        `${dir}/${stem}.1024/texture_00.png`,
+        `${dir}/${stem}.2048/texture_00.png`,
+        `${dir}/${stem}.4096/texture_00.png`,
+        `${dir}/texture_00.png`,
+    ];
+
+    return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
+}
+
+function buildModelCard(name: string, detailText: string, modelKey: string, modelPath: string) {
+    const card = document.createElement('div');
+    card.className = 'model-card';
+
+    const thumb = document.createElement('div');
+    thumb.className = 'model-thumb';
+
+    const img = document.createElement('img');
+    const previewCandidates = [
+        getGeneratedPreviewPath(modelKey),
+        ...getModelPreviewCandidates(modelPath),
+    ];
+    let previewIndex = 0;
+    const tryNextPreview = () => {
+        const next = previewCandidates[previewIndex++];
+        if (!next) return;
+        img.src = next;
+    };
+    img.alt = name;
+    img.addEventListener('error', tryNextPreview);
+    tryNextPreview();
+    thumb.appendChild(img);
+
+    const meta = document.createElement('div');
+    meta.className = 'model-meta';
+
+    const title = document.createElement('span');
+    title.className = 'model-name';
+    title.textContent = name;
+
+    const detail = document.createElement('span');
+    detail.className = 'model-detail';
+    detail.textContent = detailText;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = modelKey === currentCharacter ? '当前使用中' : '切换';
+    button.disabled = modelKey === currentCharacter;
+    button.addEventListener('click', () => {
+        closeModelPanel();
+        switchCharacter(modelKey);
+        void refreshModelPanel();
+    });
+
+    meta.appendChild(title);
+    meta.appendChild(detail);
+    card.dataset.modelKey = modelKey;
+    card.appendChild(thumb);
+    card.appendChild(meta);
+    card.appendChild(button);
+    return card;
 }
 
 function syncImportedModelRegistry(models: ImportedModelItem[]) {
@@ -660,9 +778,101 @@ function updateHideMenuLabel() {
     }
 }
 
+function hideReactionBubble() {
+    const bubble = document.getElementById('reaction-bubble');
+    if (bubble) {
+        bubble.classList.remove('visible');
+    }
+    if (bubbleTimer !== null) {
+        window.clearTimeout(bubbleTimer);
+        bubbleTimer = null;
+    }
+}
+
+function showReactionBubble(text: string) {
+    const bubble = document.getElementById('reaction-bubble');
+    const textNode = document.getElementById('reaction-bubble-text');
+    if (!bubble || !textNode) return;
+
+    textNode.textContent = text;
+    bubble.classList.add('visible');
+    if (bubbleTimer !== null) {
+        window.clearTimeout(bubbleTimer);
+    }
+    bubbleTimer = window.setTimeout(() => {
+        bubble.classList.remove('visible');
+        bubbleTimer = null;
+    }, 1800);
+}
+
+function pickNonRepeatingLine(lines: readonly string[]) {
+    const filtered = lines.filter((line) => line !== lastBubbleLine);
+    const pool = filtered.length > 0 ? filtered : lines;
+    const next = pool[Math.floor(Math.random() * pool.length)] ?? lines[0];
+    lastBubbleLine = next;
+    return next;
+}
+
+function getBubbleLineForRegion(region: CharacterRegion) {
+    switch (region) {
+        case 'face':
+            return pickNonRepeatingLine(bubbleLines.gentle);
+        case 'arms':
+            return pickNonRepeatingLine(bubbleLines.cheerful);
+        case 'chest':
+        case 'belly':
+            return pickNonRepeatingLine(bubbleLines.shy);
+        case 'legs':
+        default:
+            return pickNonRepeatingLine(bubbleLines.calm);
+    }
+}
+
+async function handleCompanionSingleClick(region: CharacterRegion) {
+    await triggerRegionReaction(region);
+    await new Promise((resolve) => window.setTimeout(resolve, 160));
+    showReactionBubble(getBubbleLineForRegion(region));
+}
+
+function getScaledWindowSize(scale: number) {
+    return {
+        width: Math.round(BASE_WINDOW_WIDTH * scale),
+        height: Math.round(BASE_WINDOW_HEIGHT * scale),
+    };
+}
+
+function applyScaledViewport() {
+    const container = document.getElementById('character-container');
+    if (container) {
+        const { width, height } = getScaledWindowSize(currentScale);
+        container.style.width = `${width}px`;
+        container.style.height = `${height}px`;
+    }
+
+    if (app) {
+        const { width, height } = getScaledWindowSize(currentScale);
+        app.renderer.resize(width, height);
+    }
+}
+
+function computeFitScale() {
+    if (!currentModel) return 1;
+
+    currentModel.scale.set(1, 1);
+    const fitScale = Math.min(
+        (app.screen.width * 0.9) / currentModel.width,
+        (app.screen.height * 0.92) / currentModel.height,
+    );
+
+    return Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1;
+}
+
 function applyCurrentScale() {
     if (!currentModel) return;
-    currentModel.scale.set(currentScale, currentScale);
+    applyScaledViewport();
+    const fitScale = computeFitScale();
+    autoFitScale = fitScale;
+    currentModel.scale.set(fitScale, fitScale);
     baseModelX = (app.screen.width - currentModel.width) / 2;
     baseModelY = app.screen.height - currentModel.height;
     currentModel.x = baseModelX;
@@ -672,10 +882,18 @@ function applyCurrentScale() {
     updateScaleControls();
 }
 
-function setScale(scale: number, persist = true) {
+async function setScale(scale: number, persist = true) {
     currentScale = Math.min(1.4, Math.max(0.01, scale));
     appSettings.character_scales[currentCharacter] = currentScale;
     applyCurrentScale();
+
+    const { width, height } = getScaledWindowSize(currentScale);
+    try {
+        await getCurrentWindow().setSize(new LogicalSize(width, height));
+    } catch (error) {
+        console.debug('Window resize failed.', error);
+    }
+
     if (persist) {
         void saveAppSettings();
     }
@@ -1451,8 +1669,8 @@ async function initPixi() {
     syncCompanionSettingsForm();
 
     app = new PIXI.Application({
-        width: 400,
-        height: 600,
+        width: BASE_WINDOW_WIDTH,
+        height: BASE_WINDOW_HEIGHT,
         backgroundColor: 0x000000,
         backgroundAlpha: 0, // 透明背景
         resolution: window.devicePixelRatio || 1,
@@ -1505,12 +1723,7 @@ async function loadLive2DModel() {
         currentModel.y = 0;
         currentModel.scale.set(1);
 
-        autoFitScale = Math.min(
-            (app.screen.width * 0.9) / currentModel.width,
-            (app.screen.height * 0.92) / currentModel.height,
-        );
-
-        currentScale = appSettings.character_scales[currentCharacter] ?? autoFitScale;
+        currentScale = appSettings.character_scales[currentCharacter] ?? 1;
 
         // 添加到场景
         if (app.stage.children.length > 0) {
@@ -1578,7 +1791,7 @@ function bindCharacterInteractions() {
         if (pointerDown && !dragStarted) {
             const region = detectCharacterRegion(pointerLocalX, pointerLocalY, hitArea.clientWidth || 1, hitArea.clientHeight || 1);
             console.log(`🎯 点击区域: ${region}`);
-            void triggerRegionReaction(region);
+            void handleCompanionSingleClick(region);
         }
 
         pointerDown = false;
@@ -1607,11 +1820,17 @@ function bindCharacterInteractions() {
     hitArea.addEventListener('dblclick', () => {
         void openChat();
     });
+
+    const bubble = document.getElementById('reaction-bubble');
+    bubble?.addEventListener('click', () => {
+        void openChat();
+    });
 }
 
 // ============== 聊天窗口 ==============
 
 async function openChat() {
+    hideReactionBubble();
     try {
         await ensureChatHistoryLoaded();
     } catch (error) {
@@ -1819,7 +2038,7 @@ async function refreshMemoryList() {
     renderMemoryList(memories);
 }
 
-function renderBuiltInModelList() {
+function renderBuiltInModelList(importedModels: ImportedModelItem[] = []) {
     const list = document.getElementById('builtin-model-list');
     if (!list) return;
 
@@ -1827,79 +2046,26 @@ function renderBuiltInModelList() {
     Object.keys(live2dModels)
         .filter((key) => !importedModelKeys.has(key))
         .forEach((key) => {
-            const row = document.createElement('div');
-            row.className = 'model-row';
-
-            const meta = document.createElement('div');
-            meta.className = 'model-meta';
-
-            const name = document.createElement('span');
-            name.className = 'model-name';
-            name.textContent = getCharacterDisplayName(key);
-
-            const detail = document.createElement('span');
-            detail.className = 'model-detail';
-            detail.textContent = key === currentCharacter ? '当前使用中' : '内置模型';
-
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.textContent = key === currentCharacter ? '当前使用中' : '切换';
-            button.disabled = key === currentCharacter;
-            button.addEventListener('click', () => {
-                closeModelPanel();
-                switchCharacter(key);
-                void refreshModelPanel();
-            });
-
-            meta.appendChild(name);
-            meta.appendChild(detail);
-            row.appendChild(meta);
-            row.appendChild(button);
-            list.appendChild(row);
+            list.appendChild(
+                buildModelCard(
+                    getCharacterDisplayName(key),
+                    key === currentCharacter ? '当前使用中' : '可用模型',
+                    key,
+                    live2dModels[key],
+                ),
+            );
         });
-}
 
-function renderImportedModelList(models: ImportedModelItem[]) {
-    const list = document.getElementById('imported-model-list');
-    if (!list) return;
-
-    list.innerHTML = '';
-    if (models.length === 0) {
-        list.textContent = '暂时还没有导入模型。';
-        return;
-    }
-
-    models.forEach((model) => {
+    importedModels.forEach((model) => {
         const key = getImportedModelKey(model);
-        const row = document.createElement('div');
-        row.className = 'model-row';
-
-        const meta = document.createElement('div');
-        meta.className = 'model-meta';
-
-        const name = document.createElement('span');
-        name.className = 'model-name';
-        name.textContent = model.name;
-
-        const detail = document.createElement('span');
-        detail.className = 'model-detail';
-        detail.textContent = key === currentCharacter ? '当前使用中 · 导入模型' : '导入模型';
-
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = key === currentCharacter ? '当前使用中' : '切换';
-        button.disabled = key === currentCharacter;
-        button.addEventListener('click', () => {
-            closeModelPanel();
-            switchCharacter(key);
-            void refreshModelPanel();
-        });
-
-        meta.appendChild(name);
-        meta.appendChild(detail);
-        row.appendChild(meta);
-        row.appendChild(button);
-        list.appendChild(row);
+        list.appendChild(
+            buildModelCard(
+                model.name,
+                key === currentCharacter ? '当前使用中' : '可用模型',
+                key,
+                model.model_path,
+            ),
+        );
     });
 }
 
@@ -1912,8 +2078,7 @@ async function refreshModelPanel() {
         summary.textContent = `${appSettings.character_name} · ${getCharacterDisplayName(currentCharacter)}`;
     }
 
-    renderBuiltInModelList();
-    renderImportedModelList(imported);
+    renderBuiltInModelList(imported);
 }
 
 function openModelPanel() {
@@ -2097,21 +2262,21 @@ window.addEventListener('DOMContentLoaded', async () => {
     const scaleSlider = document.getElementById('scale-slider') as HTMLInputElement | null;
     scaleSlider?.addEventListener('input', (event) => {
         const target = event.target as HTMLInputElement;
-        setScale(Number(target.value), false);
+        void setScale(Number(target.value), false);
     });
     scaleSlider?.addEventListener('change', (event) => {
         const target = event.target as HTMLInputElement;
-        setScale(Number(target.value), true);
+        void setScale(Number(target.value), true);
     });
 
     const scaleDecreaseBtn = document.getElementById('scale-decrease-btn');
-    scaleDecreaseBtn?.addEventListener('click', () => setScale(currentScale - 0.05));
+    scaleDecreaseBtn?.addEventListener('click', () => void setScale(currentScale - 0.05));
 
     const scaleIncreaseBtn = document.getElementById('scale-increase-btn');
-    scaleIncreaseBtn?.addEventListener('click', () => setScale(currentScale + 0.05));
+    scaleIncreaseBtn?.addEventListener('click', () => void setScale(currentScale + 0.05));
 
     const scaleResetBtn = document.getElementById('scale-reset-btn');
-    scaleResetBtn?.addEventListener('click', () => setScale(autoFitScale));
+    scaleResetBtn?.addEventListener('click', () => void setScale(autoFitScale));
 
     updateHideMenuLabel();
     updateChatTitle();

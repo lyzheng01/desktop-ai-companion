@@ -173,6 +173,49 @@
             opacity: 1;
         }
 
+        #reaction-bubble {
+            position: absolute;
+            top: 78px;
+            left: 50%;
+            transform: translate(-50%, 8px);
+            z-index: 5;
+            max-width: 220px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 180ms ease, transform 220ms ease;
+        }
+
+        #reaction-bubble.visible {
+            opacity: 1;
+            transform: translate(-50%, 0);
+            pointer-events: auto;
+        }
+
+        #reaction-bubble-text {
+            padding: 10px 14px;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.94);
+            border: 1px solid rgba(170, 185, 235, 0.8);
+            box-shadow: 0 10px 24px rgba(40, 58, 120, 0.16);
+            color: #344054;
+            font-size: 13px;
+            line-height: 1.45;
+            text-align: center;
+        }
+
+        #reaction-bubble-text::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            bottom: -8px;
+            width: 14px;
+            height: 14px;
+            background: rgba(255, 255, 255, 0.94);
+            border-right: 1px solid rgba(170, 185, 235, 0.8);
+            border-bottom: 1px solid rgba(170, 185, 235, 0.8);
+            transform: translateX(-50%) rotate(45deg);
+        }
+
         #character-stage.action-nod {
             animation: hiyori-nod 900ms ease-in-out;
         }
@@ -653,18 +696,39 @@
             display: flex;
         }
 
-        .model-row {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
+        #builtin-model-list {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
             gap: 12px;
-            padding: 10px 0;
-            border-bottom: 1px solid #eceff7;
+        }
+
+        .model-card {
+            display: grid;
+            gap: 10px;
+            padding: 10px;
+            background: #f8faff;
+            border: 1px solid #e6ebff;
+            border-radius: 14px;
+        }
+
+        .model-thumb {
+            position: relative;
+            aspect-ratio: 9 / 16;
+            border-radius: 12px;
+            overflow: hidden;
+            background: linear-gradient(180deg, #eef2ff 0%, #dbe4ff 100%);
+        }
+
+        .model-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            display: block;
         }
 
         .model-meta {
             display: grid;
-            gap: 2px;
+            gap: 4px;
         }
 
         .model-name {
@@ -677,8 +741,7 @@
             color: #667085;
         }
 
-        .model-row button,
-        #import-model-btn {
+        .model-card button {
             border: none;
             border-radius: 10px;
             background: #e9edff;
@@ -688,7 +751,7 @@
             font-weight: 600;
         }
 
-        .model-row button:disabled {
+        .model-card button:disabled {
             cursor: default;
             background: #eef2f6;
             color: #98a2b3;
@@ -740,6 +803,9 @@
         <div id="character-container">
             <div id="character-hit-area"></div>
             <div id="action-indicator"></div>
+            <div id="reaction-bubble">
+                <div id="reaction-bubble-text"></div>
+            </div>
             <div id="character-stage">
                 <div id="character-canvas"></div>
             </div>
@@ -842,13 +908,8 @@
                     <div id="active-model-summary"></div>
                 </div>
                 <div class="settings-item">
-                    <strong>内置模型</strong>
+                    <strong>可用模型</strong>
                     <div id="builtin-model-list"></div>
-                </div>
-                <div class="settings-item">
-                    <strong>导入模型</strong>
-                    <button id="import-model-btn" type="button">导入已解压模型</button>
-                    <div id="imported-model-list"></div>
                 </div>
             </div>
         </div>
