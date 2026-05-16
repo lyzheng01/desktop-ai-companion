@@ -4,6 +4,7 @@
  */
 
 import * as PIXI from 'pixi.js';
+import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
@@ -27,6 +28,10 @@ type AppSettings = {
     character_scales: Record<string, number>;
 };
 
+type DataDirInfo = {
+    data_dir: string;
+};
+
 type CharacterBehavior = {
     idleGroups: string[];
     tapGroups: string[];
@@ -38,7 +43,7 @@ type CharacterBehavior = {
 type CharacterRegion = 'face' | 'chest' | 'arms' | 'belly' | 'legs';
 type HiyoriActionHandler = () => void;
 type CompanionState = 'idle' | 'listening' | 'thinking' | 'searching' | 'composing' | 'talking' | 'sleeping';
-type ProactiveTriggerType = 'morning_greeting' | 'night_greeting' | 'long_work_session' | 'meal_time' | 'weather_update';
+type ProactiveTriggerType = 'morning_greeting' | 'night_greeting' | 'long_work_session' | 'meal_time' | 'weather_update' | 'care_followup';
 
 let app: PIXI.Application;
 let currentModel: any = null;
@@ -73,6 +78,7 @@ let lastUserActivityAt = Date.now();
 let appSessionStartedAt = Date.now();
 let pendingProactiveChatSeed: string | null = null;
 let modelPreviewVersion = Date.now().toString();
+let currentDataDir = '';
 let firstRunRequired = false;
 let desktopFlowStarted = false;
 let bootstrapActiveCompanion: CompanionProfile | null = null;
@@ -81,8 +87,9 @@ let cachedCompanions: CompanionProfile[] = [];
 const FREE_COMPANION_LIMIT = 1;
 const BASE_WINDOW_WIDTH = 400;
 const BASE_WINDOW_HEIGHT = 600;
+const backendBaseUrl = 'http://localhost:8080';
 const chatClient = new ChatClient({
-    apiEndpoint: 'http://localhost:8080/chat',
+    apiEndpoint: `${backendBaseUrl}/chat`,
 });
 const cubismCoreUrl = '/vendor/live2dcubismcore.min.js';
 const live2dModels: Record<string, string> = {
@@ -263,12 +270,21 @@ function getProactiveLine(trigger: ProactiveTriggerType, now: Date): string {
 }
 
 async function getProactiveWeatherLine(): Promise<string> {
-    const response = await fetch('http://localhost:8080/proactive/weather?location=合肥');
+    const response = await fetch(`${backendBaseUrl}/proactive/weather?location=合肥`);
     if (!response.ok) {
         throw new Error(`Proactive weather failed: ${response.status}`);
     }
     const data = await response.json() as { content?: string };
     return data.content || '我帮你看了一眼天气，今天出门前可以多留意一下温度。';
+}
+
+async function getProactiveFollowupLine(): Promise<string | null> {
+    const response = await fetch(`${backendBaseUrl}/proactive/followup`);
+    if (!response.ok) {
+        throw new Error(`Proactive followup failed: ${response.status}`);
+    }
+    const data = await response.json() as { content?: string };
+    return data.content?.trim() ? data.content : null;
 }
 
 async function showProactiveBubble(trigger: ProactiveTriggerType, text: string) {
@@ -288,6 +304,18 @@ async function evaluateProactiveTriggers() {
     const hour = now.getHours();
     const todayKey = getTodayKey(now);
     const sessionDurationMs = now.getTime() - appSessionStartedAt;
+
+    if (hour >= 8 && hour < 12 && maybeConsumeProactiveGate('care_followup', todayKey)) {
+        try {
+            const followup = await getProactiveFollowupLine();
+            if (followup) {
+                await showProactiveBubble('care_followup', followup);
+                return;
+            }
+        } catch (error) {
+            console.warn('Failed to fetch proactive care followup.', error);
+        }
+    }
 
     if (hour >= 6 && hour < 10 && maybeConsumeProactiveGate('morning_greeting', todayKey)) {
         await showProactiveBubble('morning_greeting', getProactiveLine('morning_greeting', now));
@@ -428,7 +456,7 @@ async function loadAppSettings(options: {
     activeCompanionOverride?: CompanionProfile | null;
 } = {}) {
     try {
-        const response = await fetch('http://localhost:8080/config');
+        const response = await fetch(`${backendBaseUrl}/config`);
         if (!response.ok) {
             throw new Error(`Config request failed: ${response.status}`);
         }
@@ -461,12 +489,22 @@ async function loadAppSettings(options: {
     }
 }
 
+async function loadDataDirInfo() {
+    try {
+        const info = await chatClient.loadDataDir() as DataDirInfo;
+        currentDataDir = info.data_dir;
+        syncDataDirForm();
+    } catch (error) {
+        console.warn('Failed to load data directory info.', error);
+    }
+}
+
 async function saveAppSettings() {
     appSettings.character_type = currentCharacter;
     appSettings.window_scale = currentScale;
 
     try {
-        await fetch('http://localhost:8080/config', {
+        await fetch(`${backendBaseUrl}/config`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(appSettings),
@@ -818,6 +856,13 @@ function syncCompanionSettingsForm() {
     }
 }
 
+function syncDataDirForm() {
+    const input = document.getElementById('data-dir-input') as HTMLInputElement | null;
+    if (input) {
+        input.value = currentDataDir;
+    }
+}
+
 function renderCompanionList(companions: CompanionProfile[]) {
     const list = document.getElementById('companion-list');
     if (!list) {
@@ -996,6 +1041,50 @@ function bindCompanionSettingsForm() {
         pendingFirstRunCompanionId = null;
         hideBootstrapError();
         showFirstRunPanel();
+    });
+}
+
+function bindDataDirSettingsForm() {
+    const input = document.getElementById('data-dir-input') as HTMLInputElement | null;
+    const chooseButton = document.getElementById('choose-data-dir-btn') as HTMLButtonElement | null;
+    const saveButton = document.getElementById('save-data-dir-btn') as HTMLButtonElement | null;
+
+    chooseButton?.addEventListener('click', async () => {
+        try {
+            const selected = await open({
+                directory: true,
+                multiple: false,
+                defaultPath: currentDataDir || undefined,
+                title: '选择桌宠数据存储目录',
+            });
+            if (typeof selected === 'string' && input) {
+                input.value = selected;
+            }
+        } catch (error) {
+            console.error('Failed to choose data dir.', error);
+            window.alert('打开目录选择器失败，请稍后重试。');
+        }
+    });
+
+    saveButton?.addEventListener('click', async () => {
+        const nextDir = input?.value.trim() || '';
+        if (!nextDir) {
+            window.alert('请先输入一个存储目录。');
+            return;
+        }
+
+        saveButton.disabled = true;
+        try {
+            const info = await chatClient.saveDataDir(nextDir) as DataDirInfo;
+            currentDataDir = info.data_dir;
+            syncDataDirForm();
+            window.alert('存储位置已保存，后续数据会写入这个目录。');
+        } catch (error) {
+            console.error('Failed to save data dir.', error);
+            window.alert('保存存储位置失败，请稍后重试。');
+        } finally {
+            saveButton.disabled = false;
+        }
     });
 }
 
@@ -2248,9 +2337,9 @@ function closeSettingsPanel() {
     }
 }
 
-function bindDraggablePanel(panelSelector: string, handleSelector: string) {
+function bindDraggablePanel(panelSelector: string, handleSelector?: string) {
     const panel = document.querySelector<HTMLElement>(panelSelector);
-    const handle = document.querySelector<HTMLElement>(handleSelector);
+    const handle = handleSelector ? document.querySelector<HTMLElement>(handleSelector) : panel;
     if (!panel || !handle) return;
 
     let dragging = false;
@@ -2277,7 +2366,7 @@ function bindDraggablePanel(panelSelector: string, handleSelector: string) {
 
     handle.addEventListener('pointerdown', (event) => {
         if (event.button !== 0) return;
-        if ((event.target as HTMLElement).closest('button')) return;
+        if ((event.target as HTMLElement).closest('button, input, textarea, select, option, label, a')) return;
 
         dragging = true;
         startX = event.clientX;
@@ -2749,10 +2838,12 @@ window.addEventListener('DOMContentLoaded', async () => {
         void promptImportModel();
     });
 
-    bindDraggablePanel('#chat-window', '.chat-header');
-    bindDraggablePanel('#settings-panel', '.settings-header');
+    bindDraggablePanel('#chat-window');
+    bindDraggablePanel('#settings-panel');
+    bindDraggablePanel('#model-panel');
 
     bindCompanionSettingsForm();
+    bindDataDirSettingsForm();
 
     const scaleSlider = document.getElementById('scale-slider') as HTMLInputElement | null;
     scaleSlider?.addEventListener('input', (event) => {
@@ -2778,6 +2869,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     syncCompanionSettingsForm();
     syncAmbientCompanionMode();
     hideBootstrapError();
+    await loadDataDirInfo();
 
     window.setInterval(() => {
         syncAmbientCompanionMode();
