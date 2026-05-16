@@ -1,9 +1,11 @@
 import subprocess
 import sys
 import time
+from io import BytesIO
 from pathlib import Path
 
 import requests
+from PIL import Image
 from playwright.sync_api import sync_playwright
 
 
@@ -11,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 DIST_DIR = REPO_ROOT / 'tauri-app' / 'dist'
 PREVIEW_ROOT = REPO_ROOT / 'assets' / 'model-previews'
 FRONTEND_URL = 'http://127.0.0.1:4175'
+PREVIEW_SIZE = (360, 640)
 
 def wait_for_server(url: str, timeout: float = 12.0) -> None:
     import requests
@@ -43,9 +46,35 @@ def clear_existing_previews() -> None:
             path.unlink(missing_ok=True)
 
 
-def save_preview(locator, path: Path) -> None:
+def save_preview_bytes(png_bytes: bytes, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    locator.screenshot(path=str(path))
+    path.write_bytes(png_bytes)
+
+
+def build_thumbnail_from_canvas(png_bytes: bytes) -> bytes:
+    image = Image.open(BytesIO(png_bytes)).convert('RGBA')
+    alpha = image.getchannel('A')
+    bbox = alpha.getbbox()
+    if not bbox:
+        output = Image.new('RGBA', PREVIEW_SIZE, (0, 0, 0, 0))
+        buffer = BytesIO()
+        output.save(buffer, format='PNG')
+        return buffer.getvalue()
+
+    cropped = image.crop(bbox)
+    target_width, target_height = PREVIEW_SIZE
+    scale = min(target_width / cropped.width, target_height / cropped.height)
+    resized = cropped.resize((max(1, int(cropped.width * scale)), max(1, int(cropped.height * scale))), Image.LANCZOS)
+
+    output = Image.new('RGBA', PREVIEW_SIZE, (0, 0, 0, 0))
+    x = (target_width - resized.width) // 2
+    y = int(target_height * 0.56 - resized.height / 2)
+    y = max(0, min(target_height - resized.height, y))
+    output.alpha_composite(resized, (x, y))
+
+    buffer = BytesIO()
+    output.save(buffer, format='PNG')
+    return buffer.getvalue()
 
 
 def main() -> None:
@@ -78,7 +107,9 @@ def main() -> None:
                 page.wait_for_timeout(2200)
                 page.evaluate("window.__desktopCompanionDebug?.fitCurrentModelForPreview?.()")
                 page.wait_for_timeout(250)
-                save_preview(page.locator('#character-container'), path)
+                canvas = page.locator('#character-canvas canvas').first
+                png_bytes = canvas.screenshot(type='png')
+                save_preview_bytes(build_thumbnail_from_canvas(png_bytes), path)
 
             open_panel()
 

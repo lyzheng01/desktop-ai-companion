@@ -72,6 +72,7 @@ let proactiveCheckTimer: number | null = null;
 let lastUserActivityAt = Date.now();
 let appSessionStartedAt = Date.now();
 let pendingProactiveChatSeed: string | null = null;
+let modelPreviewVersion = Date.now().toString();
 let firstRunRequired = false;
 let desktopFlowStarted = false;
 let bootstrapActiveCompanion: CompanionProfile | null = null;
@@ -479,9 +480,9 @@ function getImportedModelKey(model: ImportedModelItem) {
 function getGeneratedPreviewPath(modelKey: string) {
     if (modelKey.startsWith('imported:')) {
         const importedId = modelKey.split(':')[1] || 'unknown';
-        return `/model-previews/imported/${importedId}.png`;
+        return `/model-previews/imported/${importedId}.png?v=${modelPreviewVersion}`;
     }
-    return `/model-previews/builtin/${modelKey}.png`;
+    return `/model-previews/builtin/${modelKey}.png?v=${modelPreviewVersion}`;
 }
 
 function getModelPreviewCandidates(modelPath: string) {
@@ -2483,6 +2484,7 @@ function renderBuiltInModelList(importedModels: ImportedModelItem[] = []) {
 }
 
 async function refreshModelPanel() {
+    modelPreviewVersion = Date.now().toString();
     const imported = await chatClient.loadImportedModels();
     syncImportedModelRegistry(imported);
 
