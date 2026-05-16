@@ -9,6 +9,9 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 const MAIN_WINDOW_LABEL: &str = "main";
+const CHAT_WINDOW_LABEL: &str = "chat";
+const SETTINGS_WINDOW_LABEL: &str = "settings";
+const MODEL_WINDOW_LABEL: &str = "model";
 const BACKEND_HOST: &str = "127.0.0.1";
 const BACKEND_PORT: u16 = 8080;
 
@@ -36,8 +39,58 @@ fn hide_main_window(app: AppHandle) {
 }
 
 #[tauri::command]
+fn show_chat_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window(CHAT_WINDOW_LABEL) {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[tauri::command]
+fn hide_chat_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window(CHAT_WINDOW_LABEL) {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
+fn show_settings_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[tauri::command]
+fn hide_settings_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window(SETTINGS_WINDOW_LABEL) {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
+fn show_model_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window(MODEL_WINDOW_LABEL) {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[tauri::command]
+fn hide_model_window(app: AppHandle) {
+    if let Some(window) = app.get_webview_window(MODEL_WINDOW_LABEL) {
+        let _ = window.hide();
+    }
+}
+
+#[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+#[tauri::command]
+fn get_backend_base_url() -> String {
+    format!("http://{}:{}", BACKEND_HOST, BACKEND_PORT)
 }
 
 fn is_backend_running() -> bool {
@@ -132,7 +185,7 @@ fn main() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![show_main_window, hide_main_window, quit_app])
+        .invoke_handler(tauri::generate_handler![show_main_window, hide_main_window, show_chat_window, hide_chat_window, show_settings_window, hide_settings_window, show_model_window, hide_model_window, quit_app, get_backend_base_url])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

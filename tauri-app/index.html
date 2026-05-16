@@ -312,6 +312,91 @@
             display: flex;
         }
 
+        body[data-window-label="chat"] {
+            background: #f5f7fa;
+        }
+
+        body[data-window-label="chat"] #bootstrap-error-banner,
+        body[data-window-label="chat"] #first-run-panel,
+        body[data-window-label="chat"] #character-container,
+        body[data-window-label="chat"] #settings-panel,
+        body[data-window-label="chat"] #model-panel,
+        body[data-window-label="chat"] #context-menu {
+            display: none !important;
+        }
+
+        body[data-window-label="chat"] #app {
+            justify-content: stretch;
+        }
+
+        body[data-window-label="chat"] #chat-window {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            border-radius: 0;
+            box-shadow: none;
+            display: flex;
+        }
+
+        body[data-window-label="settings"] {
+            background: rgba(245, 247, 250, 0.98);
+        }
+
+        body[data-window-label="settings"] #bootstrap-error-banner,
+        body[data-window-label="settings"] #first-run-panel,
+        body[data-window-label="settings"] #character-container,
+        body[data-window-label="settings"] #chat-window,
+        body[data-window-label="settings"] #model-panel,
+        body[data-window-label="settings"] #context-menu {
+            display: none !important;
+        }
+
+        body[data-window-label="settings"] #app {
+            justify-content: stretch;
+        }
+
+        body[data-window-label="settings"] #settings-panel {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            max-height: none;
+            height: 100vh;
+            border-radius: 0;
+            box-shadow: none;
+            backdrop-filter: none;
+            display: flex;
+        }
+
+        body[data-window-label="model"] {
+            background: rgba(248, 250, 255, 0.98);
+        }
+
+        body[data-window-label="model"] #bootstrap-error-banner,
+        body[data-window-label="model"] #first-run-panel,
+        body[data-window-label="model"] #character-container,
+        body[data-window-label="model"] #chat-window,
+        body[data-window-label="model"] #settings-panel,
+        body[data-window-label="model"] #context-menu {
+            display: none !important;
+        }
+
+        body[data-window-label="model"] #app {
+            justify-content: stretch;
+        }
+
+        body[data-window-label="model"] #model-panel {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            max-height: none;
+            height: 100vh;
+            border-radius: 0;
+            box-shadow: none;
+            backdrop-filter: none;
+            display: flex;
+        }
+
         #settings-panel {
             position: fixed;
             top: 20px;

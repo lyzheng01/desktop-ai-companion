@@ -8,6 +8,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { ApiRequestError, ChatClient, type ChatMessage, type CompanionProfile, type ImportedModelItem, type MemoryItem } from './chat-client';
 import { HIYORI_ACTIONS, HIYORI_ACTION_KEYS, type HiyoriAction } from './hiyori-actions';
 
@@ -84,13 +85,37 @@ let desktopFlowStarted = false;
 let bootstrapActiveCompanion: CompanionProfile | null = null;
 let pendingFirstRunCompanionId: number | null = null;
 let cachedCompanions: CompanionProfile[] = [];
+let currentWindowLabel = 'main';
 const FREE_COMPANION_LIMIT = 1;
 const BASE_WINDOW_WIDTH = 400;
 const BASE_WINDOW_HEIGHT = 600;
-const backendBaseUrl = 'http://localhost:8080';
+let backendBaseUrl = 'http://localhost:8080';
 const chatClient = new ChatClient({
     apiEndpoint: `${backendBaseUrl}/chat`,
 });
+
+async function resolveBackendBaseUrl() {
+    try {
+        const resolved = await invoke<string>('get_backend_base_url');
+        if (typeof resolved === 'string' && resolved.trim()) {
+            backendBaseUrl = resolved.trim();
+        }
+    } catch {
+        backendBaseUrl = 'http://localhost:8080';
+    }
+}
+
+function isChatStandaloneWindow() {
+    return currentWindowLabel === 'chat';
+}
+
+function isSettingsStandaloneWindow() {
+    return currentWindowLabel === 'settings';
+}
+
+function isModelStandaloneWindow() {
+    return currentWindowLabel === 'model';
+}
 const cubismCoreUrl = '/vendor/live2dcubismcore.min.js';
 const live2dModels: Record<string, string> = {
     kei: '/live2d/kei_en/kei_basic_free/runtime/kei_basic_free.model3.json',
@@ -2289,6 +2314,19 @@ async function openChat() {
     const proactiveSeed = pendingProactiveChatSeed;
     hideReactionBubble();
     markUserActivity();
+
+    if (!isChatStandaloneWindow()) {
+        if (proactiveSeed) {
+            await getCurrentWebviewWindow().emitTo('chat', 'chat-open-requested', { seed: proactiveSeed });
+        } else {
+            await getCurrentWebviewWindow().emitTo('chat', 'chat-open-requested', null);
+        }
+        pendingProactiveChatSeed = null;
+        await invoke('show_chat_window');
+        logProductEvent('chat_opened', { character: currentCharacter, mode: 'standalone' });
+        return;
+    }
+
     try {
         await ensureChatHistoryLoaded();
     } catch (error) {
@@ -2310,6 +2348,12 @@ async function openChat() {
 }
 
 function closeChat() {
+    if (isChatStandaloneWindow()) {
+        chatWindowVisible = false;
+        void invoke('hide_chat_window');
+        return;
+    }
+
     const chatWindow = document.getElementById('chat-window');
     if (chatWindow) {
         chatWindow.classList.remove('visible');
@@ -2318,6 +2362,13 @@ function closeChat() {
 }
 
 function openSettingsPanel() {
+    if (!isSettingsStandaloneWindow()) {
+        hideContextMenu();
+        void invoke('show_settings_window');
+        logProductEvent('settings_opened', { character: currentCharacter, mode: 'standalone' });
+        return;
+    }
+
     const panel = document.getElementById('settings-panel');
     if (panel) {
         panel.classList.add('visible');
@@ -2331,6 +2382,11 @@ function openSettingsPanel() {
 }
 
 function closeSettingsPanel() {
+    if (isSettingsStandaloneWindow()) {
+        void invoke('hide_settings_window');
+        return;
+    }
+
     const panel = document.getElementById('settings-panel');
     if (panel) {
         panel.classList.remove('visible');
@@ -2629,6 +2685,12 @@ async function refreshModelPanel() {
 }
 
 function openModelPanel() {
+    if (!isModelStandaloneWindow()) {
+        void invoke('show_model_window');
+        void getCurrentWebviewWindow().emitTo('model', 'model-open-requested', null);
+        return;
+    }
+
     const panel = document.getElementById('model-panel');
     if (panel) {
         panel.classList.add('visible');
@@ -2637,10 +2699,98 @@ function openModelPanel() {
 }
 
 function closeModelPanel() {
+    if (isModelStandaloneWindow()) {
+        void invoke('hide_model_window');
+        return;
+    }
+
     const panel = document.getElementById('model-panel');
     if (panel) {
         panel.classList.remove('visible');
     }
+}
+
+async function initializeStandaloneChatWindow() {
+    document.body.dataset.windowLabel = 'chat';
+    const chatWindow = document.getElementById('chat-window');
+    if (chatWindow) {
+        chatWindow.classList.add('visible');
+        chatWindowVisible = true;
+    }
+
+    try {
+        await ensureChatHistoryLoaded();
+    } catch (error) {
+        console.warn('Failed to load chat history for standalone chat window.', error);
+    }
+
+    await getCurrentWebviewWindow().listen<{ seed?: string | null } | null>('chat-open-requested', async (event) => {
+        const payload = event.payload;
+        const seed = payload && typeof payload === 'object' ? payload.seed : null;
+        if (seed) {
+            addMessage('assistant', seed);
+        }
+        const chat = document.getElementById('chat-window');
+        chat?.classList.add('visible');
+        chatWindowVisible = true;
+        await getCurrentWindow().show();
+        await getCurrentWindow().setFocus();
+    });
+
+    document.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        if ((event.target as HTMLElement).closest('button, input, textarea, select, option, label, a')) return;
+        void getCurrentWindow().startDragging();
+    });
+}
+
+async function initializeStandaloneSettingsWindow() {
+    document.body.dataset.windowLabel = 'settings';
+    const panel = document.getElementById('settings-panel');
+    if (panel) {
+        panel.classList.add('visible');
+    }
+
+    updateCharacterLabel();
+    updateScaleControls();
+    syncCompanionSettingsForm();
+    syncDataDirForm();
+    try {
+        await refreshCompanionList();
+        await refreshMemoryList();
+        await refreshModelPanel();
+    } catch (error) {
+        console.warn('Failed to initialize standalone settings window.', error);
+    }
+
+    document.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        if ((event.target as HTMLElement).closest('button, input, textarea, select, option, label, a')) return;
+        void getCurrentWindow().startDragging();
+    });
+}
+
+async function initializeStandaloneModelWindow() {
+    document.body.dataset.windowLabel = 'model';
+    const panel = document.getElementById('model-panel');
+    if (panel) {
+        panel.classList.add('visible');
+    }
+
+    await refreshModelPanel();
+    await getCurrentWebviewWindow().listen('model-open-requested', async () => {
+        const model = document.getElementById('model-panel');
+        model?.classList.add('visible');
+        await refreshModelPanel();
+        await getCurrentWindow().show();
+        await getCurrentWindow().setFocus();
+    });
+
+    document.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        if ((event.target as HTMLElement).closest('button, input, textarea, select, option, label, a')) return;
+        void getCurrentWindow().startDragging();
+    });
 }
 
 async function promptImportModel() {
@@ -2772,6 +2922,78 @@ document.addEventListener('keydown', (e) => {
 window.addEventListener('DOMContentLoaded', async () => {
     appSessionStartedAt = Date.now();
     lastUserActivityAt = Date.now();
+    currentWindowLabel = getCurrentWebviewWindow().label;
+    document.body.dataset.windowLabel = currentWindowLabel;
+    await resolveBackendBaseUrl();
+
+    if (isChatStandaloneWindow()) {
+        const closeBtn = document.querySelector('.close-btn');
+        closeBtn?.addEventListener('click', closeChat);
+        const sendBtn = document.getElementById('send-btn');
+        sendBtn?.addEventListener('click', sendMessage);
+        const chatInput = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+        chatInput?.addEventListener('focus', () => {
+            markUserActivity();
+        });
+        chatInput?.addEventListener('input', () => {
+            markUserActivity();
+        });
+        updateChatTitle();
+        await initializeStandaloneChatWindow();
+        return;
+    }
+
+    if (isSettingsStandaloneWindow()) {
+        const settingsCloseBtn = document.querySelector('.settings-close-btn');
+        settingsCloseBtn?.addEventListener('click', closeSettingsPanel);
+        bindCompanionSettingsForm();
+        bindDataDirSettingsForm();
+
+        const testMorningBtn = document.getElementById('test-morning-btn');
+        testMorningBtn?.addEventListener('click', () => {
+            void triggerProactivePreview('morning_greeting');
+        });
+        const testWeatherBtn = document.getElementById('test-weather-btn');
+        testWeatherBtn?.addEventListener('click', () => {
+            void triggerProactivePreview('weather_update');
+        });
+        const testMealBtn = document.getElementById('test-meal-btn');
+        testMealBtn?.addEventListener('click', () => {
+            void triggerProactivePreview('meal_time');
+        });
+        const testRestBtn = document.getElementById('test-rest-btn');
+        testRestBtn?.addEventListener('click', () => {
+            void triggerProactivePreview('long_work_session');
+        });
+
+        const scaleSlider = document.getElementById('scale-slider') as HTMLInputElement | null;
+        scaleSlider?.addEventListener('input', (event) => {
+            const target = event.target as HTMLInputElement;
+            void setScale(Number(target.value), false);
+        });
+        scaleSlider?.addEventListener('change', (event) => {
+            const target = event.target as HTMLInputElement;
+            void setScale(Number(target.value), true);
+        });
+        document.getElementById('scale-decrease-btn')?.addEventListener('click', () => void setScale(currentScale - 0.05));
+        document.getElementById('scale-increase-btn')?.addEventListener('click', () => void setScale(currentScale + 0.05));
+        document.getElementById('scale-reset-btn')?.addEventListener('click', () => void setScale(autoFitScale));
+
+        updateCharacterLabel();
+        updateChatTitle();
+        syncAmbientCompanionMode();
+        await loadDataDirInfo();
+        await initializeStandaloneSettingsWindow();
+        return;
+    }
+
+    if (isModelStandaloneWindow()) {
+        const modelCloseBtn = document.querySelector('.model-close-btn');
+        modelCloseBtn?.addEventListener('click', closeModelPanel);
+        await initializeStandaloneModelWindow();
+        return;
+    }
+
     bindContextMenuActions();
     bindCharacterInteractions();
     bindFirstRunCreator();
@@ -2837,10 +3059,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     importModelBtn?.addEventListener('click', () => {
         void promptImportModel();
     });
-
-    bindDraggablePanel('#chat-window');
-    bindDraggablePanel('#settings-panel');
-    bindDraggablePanel('#model-panel');
 
     bindCompanionSettingsForm();
     bindDataDirSettingsForm();

@@ -23,6 +23,48 @@
           "alwaysOnTop": true,
           "skipTaskbar": true,
           "fullscreen": false
+        },
+        {
+          "label": "chat",
+          "title": "Desktop AI Companion Chat",
+          "width": 380,
+          "height": 500,
+          "resizable": false,
+          "transparent": false,
+          "decorations": false,
+          "shadow": true,
+          "alwaysOnTop": true,
+          "skipTaskbar": false,
+          "visible": false,
+          "fullscreen": false
+        },
+        {
+          "label": "settings",
+          "title": "Desktop AI Companion Settings",
+          "width": 360,
+          "height": 760,
+          "resizable": false,
+          "transparent": false,
+          "decorations": false,
+          "shadow": true,
+          "alwaysOnTop": true,
+          "skipTaskbar": false,
+          "visible": false,
+          "fullscreen": false
+        },
+        {
+          "label": "model",
+          "title": "Desktop AI Companion Models",
+          "width": 380,
+          "height": 760,
+          "resizable": false,
+          "transparent": false,
+          "decorations": false,
+          "shadow": true,
+          "alwaysOnTop": true,
+          "skipTaskbar": false,
+          "visible": false,
+          "fullscreen": false
         }
     ],
     "security": {
