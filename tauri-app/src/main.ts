@@ -95,7 +95,6 @@ const live2dModels: Record<string, string> = {
     miara_pro_en: '/live2d/miara_pro_en/runtime/miara_pro_t03.model3.json',
     miku_pro_jp: '/live2d/miku_pro_jp/runtime/miku_sample_t04.model3.json',
     natori_pro_zh: '/live2d/natori_pro_zh/runtime/natori_pro_t06.model3.json',
-    ren_pro_zh: '/live2d/ren_pro_zh/runtime/ren.model3.json',
 };
 const modelDisplayNames: Record<string, string> = {
     kei: 'Kei',
@@ -107,7 +106,6 @@ const modelDisplayNames: Record<string, string> = {
     miara_pro_en: 'Miara',
     miku_pro_jp: 'Miku',
     natori_pro_zh: 'Natori',
-    ren_pro_zh: 'Ren',
 };
 const importedModelKeys = new Set<string>();
 let currentCharacter = 'hiyori_pro_zh';
@@ -1878,6 +1876,7 @@ declare global {
         __desktopCompanionDebug?: {
             triggerProactiveBubble: (trigger: ProactiveTriggerType, text: string) => Promise<void>;
             fitCurrentModelForPreview: () => boolean;
+            getCurrentModelPreviewBounds: () => { x: number; y: number; width: number; height: number } | null;
         };
     }
 }
@@ -1925,6 +1924,18 @@ window.__desktopCompanionDebug = {
         await showProactiveBubble(trigger, text);
     },
     fitCurrentModelForPreview: () => fitCurrentModelForPreview(),
+    getCurrentModelPreviewBounds: () => {
+        if (!currentModel?.getBounds) {
+            return null;
+        }
+        const bounds = currentModel.getBounds();
+        return {
+            x: bounds.x,
+            y: bounds.y,
+            width: bounds.width,
+            height: bounds.height,
+        };
+    },
 };
 live2dDebugState.hiyoriActions = Object.fromEntries(
     HIYORI_ACTION_KEYS.map((key) => [key, HIYORI_ACTIONS[key].label]),

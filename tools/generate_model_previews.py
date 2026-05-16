@@ -14,6 +14,8 @@ DIST_DIR = REPO_ROOT / 'tauri-app' / 'dist'
 PREVIEW_ROOT = REPO_ROOT / 'assets' / 'model-previews'
 FRONTEND_URL = 'http://127.0.0.1:4175'
 PREVIEW_SIZE = (360, 640)
+PREVIEW_SAFE_WIDTH = 0.82
+PREVIEW_SAFE_HEIGHT = 0.8
 
 def wait_for_server(url: str, timeout: float = 12.0) -> None:
     import requests
@@ -51,10 +53,16 @@ def save_preview_bytes(png_bytes: bytes, path: Path) -> None:
     path.write_bytes(png_bytes)
 
 
-def build_thumbnail_from_canvas(png_bytes: bytes) -> bytes:
+def build_thumbnail_from_canvas(png_bytes: bytes, bounds: dict | None) -> bytes:
     image = Image.open(BytesIO(png_bytes)).convert('RGBA')
-    alpha = image.getchannel('A')
-    bbox = alpha.getbbox()
+    if bounds:
+        left = max(0, int(bounds['x']))
+        top = max(0, int(bounds['y']))
+        right = min(image.width, int(bounds['x'] + bounds['width']))
+        bottom = min(image.height, int(bounds['y'] + bounds['height']))
+        bbox = (left, top, right, bottom) if right > left and bottom > top else None
+    else:
+        bbox = image.getchannel('A').getbbox()
     if not bbox:
         output = Image.new('RGBA', PREVIEW_SIZE, (0, 0, 0, 0))
         buffer = BytesIO()
@@ -63,12 +71,14 @@ def build_thumbnail_from_canvas(png_bytes: bytes) -> bytes:
 
     cropped = image.crop(bbox)
     target_width, target_height = PREVIEW_SIZE
-    scale = min(target_width / cropped.width, target_height / cropped.height)
+    safe_width = int(target_width * PREVIEW_SAFE_WIDTH)
+    safe_height = int(target_height * PREVIEW_SAFE_HEIGHT)
+    scale = min(safe_width / cropped.width, safe_height / cropped.height)
     resized = cropped.resize((max(1, int(cropped.width * scale)), max(1, int(cropped.height * scale))), Image.LANCZOS)
 
     output = Image.new('RGBA', PREVIEW_SIZE, (0, 0, 0, 0))
     x = (target_width - resized.width) // 2
-    y = int(target_height * 0.56 - resized.height / 2)
+    y = int(target_height * 0.58 - resized.height / 2)
     y = max(0, min(target_height - resized.height, y))
     output.alpha_composite(resized, (x, y))
 
@@ -107,9 +117,10 @@ def main() -> None:
                 page.wait_for_timeout(2200)
                 page.evaluate("window.__desktopCompanionDebug?.fitCurrentModelForPreview?.()")
                 page.wait_for_timeout(250)
+                bounds = page.evaluate("window.__desktopCompanionDebug?.getCurrentModelPreviewBounds?.()")
                 canvas = page.locator('#character-canvas canvas').first
                 png_bytes = canvas.screenshot(type='png')
-                save_preview_bytes(build_thumbnail_from_canvas(png_bytes), path)
+                save_preview_bytes(build_thumbnail_from_canvas(png_bytes, bounds), path)
 
             open_panel()
 
