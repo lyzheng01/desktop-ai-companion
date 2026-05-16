@@ -37,7 +37,7 @@ type CharacterBehavior = {
 
 type CharacterRegion = 'face' | 'chest' | 'arms' | 'belly' | 'legs';
 type HiyoriActionHandler = () => void;
-type CompanionState = 'idle' | 'listening' | 'thinking' | 'searching' | 'composing' | 'talking';
+type CompanionState = 'idle' | 'listening' | 'thinking' | 'searching' | 'composing' | 'talking' | 'sleeping';
 type ProactiveTriggerType = 'morning_greeting' | 'night_greeting' | 'long_work_session' | 'meal_time' | 'weather_update';
 
 let app: PIXI.Application;
@@ -367,6 +367,7 @@ function updateChatStatus(state: CompanionState) {
         searching: '正在查询',
         composing: '整理回答',
         talking: '正在回复',
+        sleeping: '安静休息中',
     };
 
     const label = labelMap[state];
@@ -380,6 +381,15 @@ function updateChatStatus(state: CompanionState) {
 }
 
 function updateCompanionStateFeedback(state: CompanionState) {
+    if (state === 'sleeping') {
+        showPersistentIndicator('晚安模式');
+        if (currentModel) {
+            animateHeadTilt(-0.08, -10, 900);
+        }
+        stateIndicatorMode = state;
+        return;
+    }
+
     if (state === 'searching') {
         showPersistentIndicator('正在查询');
         animateFocus(app.screen.width * 0.58, app.screen.height * 0.24, 900);
@@ -391,12 +401,18 @@ function updateCompanionStateFeedback(state: CompanionState) {
     if (state === 'composing') {
         showPersistentIndicator('整理回答');
         animateFocus(app.screen.width * 0.46, app.screen.height * 0.22, 900);
+        if (currentModel) {
+            animateHeadTilt(-0.1, -14, 700);
+        }
         stateIndicatorMode = state;
         return;
     }
 
     if (state === 'thinking') {
         showPersistentIndicator('想一下');
+        if (currentModel) {
+            animateHeadTilt(-0.12, -18, 760);
+        }
         stateIndicatorMode = state;
         return;
     }
@@ -1687,7 +1703,7 @@ function scheduleIdleLoop() {
     if (!currentModel) return;
 
     live2dDebugState.idleActive = true;
-    const nextDelay = 4500 + Math.random() * 4500;
+    const nextDelay = isCompanionSleepWindow(new Date()) ? 8500 + Math.random() * 5500 : 4500 + Math.random() * 4500;
     idleActionTimer = window.setTimeout(async () => {
         await triggerIdleAction();
         scheduleIdleLoop();
@@ -1736,8 +1752,21 @@ function startTalkingAnimation(text: string) {
         talkStopTimer = null;
         setLipSyncValue(0);
         live2dDebugState.talkingActive = false;
+        animateNod();
         setCompanionState('idle');
     }, duration);
+}
+
+function isCompanionSleepWindow(now: Date) {
+    const hour = now.getHours();
+    return appSettings.proactive_mode === 'quiet' || isDndActive(now) || hour >= 23 || hour < 6;
+}
+
+function syncAmbientCompanionMode() {
+    const nextState: CompanionState = isCompanionSleepWindow(new Date()) ? 'sleeping' : 'idle';
+    if (!live2dDebugState.talkingActive && document.body.dataset.companionState !== nextState) {
+        setCompanionState(nextState);
+    }
 }
 
 async function triggerCharacterAttention() {
@@ -2184,6 +2213,9 @@ async function openChat() {
     }
     if (proactiveSeed) {
         addMessage('assistant', proactiveSeed);
+    }
+    if (app?.screen) {
+        animateFocus(app.screen.width * 0.5, app.screen.height * 0.24, 1000);
     }
     logProductEvent('chat_opened', { character: currentCharacter });
 }
@@ -2668,6 +2700,20 @@ window.addEventListener('DOMContentLoaded', async () => {
         sendBtn.addEventListener('click', sendMessage);
     }
 
+    const chatInput = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+    chatInput?.addEventListener('focus', () => {
+        markUserActivity();
+        if (app?.screen) {
+            animateFocus(app.screen.width * 0.5, app.screen.height * 0.24, 900);
+        }
+    });
+    chatInput?.addEventListener('input', () => {
+        markUserActivity();
+        if (app?.screen) {
+            animateFocus(app.screen.width * 0.48, app.screen.height * 0.24, 700);
+        }
+    });
+
     const settingsCloseBtn = document.querySelector('.settings-close-btn');
     if (settingsCloseBtn) {
         settingsCloseBtn.addEventListener('click', closeSettingsPanel);
@@ -2730,7 +2776,12 @@ window.addEventListener('DOMContentLoaded', async () => {
     updateHideMenuLabel();
     updateChatTitle();
     syncCompanionSettingsForm();
+    syncAmbientCompanionMode();
     hideBootstrapError();
+
+    window.setInterval(() => {
+        syncAmbientCompanionMode();
+    }, 60 * 1000);
 
     try {
         await refreshModelPanel();
