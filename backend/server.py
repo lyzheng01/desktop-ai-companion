@@ -56,6 +56,10 @@ class ChatResponse(BaseModel):
     content: str
 
 
+class ProactiveMessageResponse(BaseModel):
+    content: str
+
+
 class MemoryCreateRequest(BaseModel):
     content: str
     category: str = "preference"
@@ -371,6 +375,32 @@ def get_current_datetime_context(query: str) -> str:
     if any(token in query for token in ["星期", "周几"]):
         return f"今天是 {now.strftime('%Y年%m月%d日')}，{weekday}。"
     return f"今天的日期是 {now.strftime('%Y年%m月%d日')}，{weekday}。"
+
+
+def build_proactive_weather_line(location: str = "合肥") -> str:
+    latitude, longitude, resolved_name = geocode_location(location)
+    response = httpx.get(
+        "https://api.open-meteo.com/v1/forecast",
+        params={
+            "latitude": latitude,
+            "longitude": longitude,
+            "current": "temperature_2m,weather_code",
+            "daily": "temperature_2m_max,temperature_2m_min",
+            "timezone": "Asia/Shanghai",
+            "forecast_days": 1,
+        },
+        headers={"User-Agent": "desktop-ai-companion/0.1"},
+        timeout=10,
+    )
+    response.raise_for_status()
+    data = response.json()
+    current = data.get("current", {})
+    daily = data.get("daily", {})
+    desc = describe_weather_code(current.get("weather_code"))
+    temp_c = current.get("temperature_2m", "?")
+    max_temp = (daily.get("temperature_2m_max") or ["?"])[0]
+    min_temp = (daily.get("temperature_2m_min") or ["?"])[0]
+    return f"{resolved_name}今天{desc}，现在大约{temp_c}°C，白天大概 {min_temp}°C 到 {max_temp}°C。"
 
 
 def detect_base_currency(query: str) -> str:
@@ -770,6 +800,11 @@ app.add_middleware(
 async def health_check():
     """健康检查"""
     return {"status": "ok", "version": "0.1.0"}
+
+
+@app.get("/proactive/weather", response_model=ProactiveMessageResponse)
+async def proactive_weather(location: str = "合肥"):
+    return ProactiveMessageResponse(content=build_proactive_weather_line(location))
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):

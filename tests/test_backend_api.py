@@ -49,6 +49,15 @@ def test_chat_prefers_native_live_response_for_live_queries(monkeypatch):
     assert "2026年05月16日" in response.json()["content"]
 
 
+def test_proactive_weather_endpoint_returns_content(monkeypatch):
+    monkeypatch.setattr(server_module, "build_proactive_weather_line", lambda location='合肥': f"{location}今天晴天，适合出门。")
+
+    response = client.get("/proactive/weather?location=合肥")
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "合肥今天晴天，适合出门。"
+
+
 def test_config_name_update_syncs_active_companion():
     companion_id = create_companion(
         name="小艾",

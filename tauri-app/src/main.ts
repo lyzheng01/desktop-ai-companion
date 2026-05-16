@@ -38,6 +38,7 @@ type CharacterBehavior = {
 type CharacterRegion = 'face' | 'chest' | 'arms' | 'belly' | 'legs';
 type HiyoriActionHandler = () => void;
 type CompanionState = 'idle' | 'listening' | 'thinking' | 'searching' | 'composing' | 'talking';
+type ProactiveTriggerType = 'morning_greeting' | 'night_greeting' | 'long_work_session' | 'meal_time' | 'weather_update';
 
 let app: PIXI.Application;
 let currentModel: any = null;
@@ -66,6 +67,11 @@ let stageAnimationFrame: number | null = null;
 let actionIndicatorTimer: number | null = null;
 let bubbleTimer: number | null = null;
 let lastBubbleLine = '';
+let pendingSingleClickTimer: number | null = null;
+let proactiveCheckTimer: number | null = null;
+let lastUserActivityAt = Date.now();
+let appSessionStartedAt = Date.now();
+let pendingProactiveChatSeed: string | null = null;
 let firstRunRequired = false;
 let desktopFlowStarted = false;
 let bootstrapActiveCompanion: CompanionProfile | null = null;
@@ -157,6 +163,7 @@ const bubbleLines = {
         '我没有走开哦。',
     ],
 } as const;
+const proactiveStorageKey = 'desktop-ai-proactive-state-v1';
 let appSettings: AppSettings = {
     user_nickname: '小伙伴',
     user_display_name: '你',
@@ -181,6 +188,166 @@ let stateIndicatorMode: CompanionState | null = null;
 
 function logProductEvent(name: string, payload: Record<string, unknown> = {}) {
     console.log(`PRODUCT_EVENT ${name} ${JSON.stringify(payload)}`);
+}
+
+function markUserActivity() {
+    lastUserActivityAt = Date.now();
+}
+
+function loadProactiveState(): Record<string, string> {
+    try {
+        const raw = window.localStorage.getItem(proactiveStorageKey);
+        if (!raw) return {};
+        const parsed = JSON.parse(raw) as Record<string, string>;
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+function saveProactiveState(state: Record<string, string>) {
+    window.localStorage.setItem(proactiveStorageKey, JSON.stringify(state));
+}
+
+function getTodayKey(now: Date) {
+    return now.toISOString().slice(0, 10);
+}
+
+function getMealWindowKey(now: Date) {
+    const hour = now.getHours();
+    if (hour >= 7 && hour < 10) return 'breakfast';
+    if (hour >= 11 && hour < 14) return 'lunch';
+    return 'dinner';
+}
+
+function isDndActive(now: Date) {
+    if (!appSettings.dnd_enabled) return false;
+    const [startHour, startMinute] = appSettings.dnd_start.split(':').map(Number);
+    const [endHour, endMinute] = appSettings.dnd_end.split(':').map(Number);
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const startMinutes = startHour * 60 + startMinute;
+    const endMinutes = endHour * 60 + endMinute;
+
+    if (startMinutes <= endMinutes) {
+        return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+    }
+    return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+}
+
+function canShowProactive(now: Date, trigger: ProactiveTriggerType): boolean {
+    if (chatWindowVisible) return false;
+    if (isDndActive(now)) return false;
+    if (appSettings.proactive_mode === 'quiet') return false;
+    if (trigger !== 'morning_greeting' && trigger !== 'night_greeting' && appSettings.proactive_mode !== 'remind') {
+        return false;
+    }
+
+    const recentActivityMs = now.getTime() - lastUserActivityAt;
+    if (recentActivityMs < 2 * 60 * 1000) return false;
+    return true;
+}
+
+function maybeConsumeProactiveGate(trigger: ProactiveTriggerType, key: string): boolean {
+    const state = loadProactiveState();
+    if (state[trigger] === key) return false;
+    state[trigger] = key;
+    saveProactiveState(state);
+    return true;
+}
+
+function getProactiveLine(trigger: ProactiveTriggerType, now: Date): string {
+    if (trigger === 'morning_greeting') return '早呀，今天也一起慢慢开始吧。';
+    if (trigger === 'night_greeting') return '不早啦，忙完的话也记得早点休息。';
+    if (trigger === 'long_work_session') return '你已经坐挺久啦，要不要起来活动一下？';
+    if (trigger === 'meal_time') return now.getHours() < 14 ? '差不多到饭点了，记得照顾一下自己。' : '晚饭时间快到了，别让自己太晚吃饭哦。';
+    return '我帮你看了一眼今天天气。';
+}
+
+async function getProactiveWeatherLine(): Promise<string> {
+    const response = await fetch('http://localhost:8080/proactive/weather?location=合肥');
+    if (!response.ok) {
+        throw new Error(`Proactive weather failed: ${response.status}`);
+    }
+    const data = await response.json() as { content?: string };
+    return data.content || '我帮你看了一眼天气，今天出门前可以多留意一下温度。';
+}
+
+async function showProactiveBubble(trigger: ProactiveTriggerType, text: string) {
+    pendingProactiveChatSeed = text;
+    showReactionBubble(text);
+    if (app?.screen) {
+        animateFocus(app.screen.width * 0.5, app.screen.height * 0.24, 1200);
+    }
+    await playMotionFromGroups(getCurrentBehavior().greetGroups);
+    logProductEvent('proactive_bubble_shown', { trigger, text });
+}
+
+async function evaluateProactiveTriggers() {
+    const now = new Date();
+    if (!canShowProactive(now, 'morning_greeting')) return;
+
+    const hour = now.getHours();
+    const todayKey = getTodayKey(now);
+    const sessionDurationMs = now.getTime() - appSessionStartedAt;
+
+    if (hour >= 6 && hour < 10 && maybeConsumeProactiveGate('morning_greeting', todayKey)) {
+        await showProactiveBubble('morning_greeting', getProactiveLine('morning_greeting', now));
+        return;
+    }
+
+    if (hour >= 21 && hour < 24 && maybeConsumeProactiveGate('night_greeting', todayKey)) {
+        await showProactiveBubble('night_greeting', getProactiveLine('night_greeting', now));
+        return;
+    }
+
+    if (sessionDurationMs >= 75 * 60 * 1000 && maybeConsumeProactiveGate('long_work_session', `${todayKey}-${Math.floor(hour / 3)}`)) {
+        await showProactiveBubble('long_work_session', getProactiveLine('long_work_session', now));
+        return;
+    }
+
+    const inMealWindow = (hour >= 11 && hour < 14) || (hour >= 17 && hour < 20);
+    if (inMealWindow && maybeConsumeProactiveGate('meal_time', `${todayKey}-${getMealWindowKey(now)}`)) {
+        await showProactiveBubble('meal_time', getProactiveLine('meal_time', now));
+        return;
+    }
+
+    if (hour >= 7 && hour < 9 && maybeConsumeProactiveGate('weather_update', todayKey)) {
+        try {
+            await showProactiveBubble('weather_update', await getProactiveWeatherLine());
+        } catch (error) {
+            console.warn('Failed to fetch proactive weather line.', error);
+        }
+    }
+}
+
+function startProactiveLoop() {
+    if (proactiveCheckTimer !== null) {
+        window.clearInterval(proactiveCheckTimer);
+    }
+    proactiveCheckTimer = window.setInterval(() => {
+        void evaluateProactiveTriggers();
+    }, 60 * 1000);
+    void evaluateProactiveTriggers();
+}
+
+async function triggerProactivePreview(trigger: ProactiveTriggerType) {
+    const now = new Date();
+    markUserActivity();
+    hideReactionBubble();
+
+    if (trigger === 'weather_update') {
+        pendingProactiveChatSeed = '我帮你看一下今天天气。';
+        showReactionBubble('我帮你看一下今天天气。');
+        try {
+            await showProactiveBubble(trigger, await getProactiveWeatherLine());
+        } catch (error) {
+            console.warn('Failed to preview proactive weather bubble.', error);
+            await showProactiveBubble(trigger, '我帮你看了一眼天气，今天出门前可以留意一下温度。');
+        }
+        return;
+    }
+
+    await showProactiveBubble(trigger, getProactiveLine(trigger, now));
 }
 
 function setCompanionState(state: CompanionState) {
@@ -836,11 +1003,15 @@ function hideReactionBubble() {
     const bubble = document.getElementById('reaction-bubble');
     if (bubble) {
         bubble.classList.remove('visible');
+        (bubble as HTMLElement).style.opacity = '0';
+        (bubble as HTMLElement).style.transform = 'translate(-50%, 8px)';
+        (bubble as HTMLElement).style.pointerEvents = 'none';
     }
     if (bubbleTimer !== null) {
         window.clearTimeout(bubbleTimer);
         bubbleTimer = null;
     }
+    pendingProactiveChatSeed = null;
 }
 
 function showReactionBubble(text: string) {
@@ -850,13 +1021,19 @@ function showReactionBubble(text: string) {
 
     textNode.textContent = text;
     bubble.classList.add('visible');
+    (bubble as HTMLElement).style.opacity = '1';
+    (bubble as HTMLElement).style.transform = 'translate(-50%, 0)';
+    (bubble as HTMLElement).style.pointerEvents = 'auto';
     if (bubbleTimer !== null) {
         window.clearTimeout(bubbleTimer);
     }
     bubbleTimer = window.setTimeout(() => {
         bubble.classList.remove('visible');
+        (bubble as HTMLElement).style.opacity = '0';
+        (bubble as HTMLElement).style.transform = 'translate(-50%, 8px)';
+        (bubble as HTMLElement).style.pointerEvents = 'none';
         bubbleTimer = null;
-    }, 1800);
+    }, 2400);
 }
 
 function pickNonRepeatingLine(lines: readonly string[]) {
@@ -883,9 +1060,11 @@ function getBubbleLineForRegion(region: CharacterRegion) {
 }
 
 async function handleCompanionSingleClick(region: CharacterRegion) {
+    const bubbleLine = getBubbleLineForRegion(region);
+    window.setTimeout(() => {
+        showReactionBubble(bubbleLine);
+    }, 180);
     await triggerRegionReaction(region);
-    await new Promise((resolve) => window.setTimeout(resolve, 160));
-    showReactionBubble(getBubbleLineForRegion(region));
 }
 
 function getScaledWindowSize(scale: number) {
@@ -1692,10 +1871,18 @@ declare global {
     interface Window {
         Live2DCubismCore?: unknown;
         __live2dDebugState?: typeof live2dDebugState;
+        __desktopCompanionDebug?: {
+            triggerProactiveBubble: (trigger: ProactiveTriggerType, text: string) => Promise<void>;
+        };
     }
 }
 
 window.__live2dDebugState = live2dDebugState;
+window.__desktopCompanionDebug = {
+    triggerProactiveBubble: async (trigger, text) => {
+        await showProactiveBubble(trigger, text);
+    },
+};
 live2dDebugState.hiyoriActions = Object.fromEntries(
     HIYORI_ACTION_KEYS.map((key) => [key, HIYORI_ACTIONS[key].label]),
 ) as Record<HiyoriAction, string>;
@@ -1867,12 +2054,6 @@ function bindCharacterInteractions() {
     };
 
     const onPointerUp = () => {
-        if (pointerDown && !dragStarted) {
-            const region = detectCharacterRegion(pointerLocalX, pointerLocalY, hitArea.clientWidth || 1, hitArea.clientHeight || 1);
-            console.log(`🎯 点击区域: ${region}`);
-            void handleCompanionSingleClick(region);
-        }
-
         pointerDown = false;
         dragStarted = false;
         stopPointerTracking();
@@ -1896,12 +2077,36 @@ function bindCharacterInteractions() {
         window.addEventListener('pointerup', onPointerUp);
     });
 
+    hitArea.addEventListener('click', () => {
+        if (dragStarted) {
+            return;
+        }
+        markUserActivity();
+
+        if (pendingSingleClickTimer !== null) {
+            window.clearTimeout(pendingSingleClickTimer);
+        }
+
+        const region = detectCharacterRegion(pointerLocalX, pointerLocalY, hitArea.clientWidth || 1, hitArea.clientHeight || 1);
+        pendingSingleClickTimer = window.setTimeout(() => {
+            pendingSingleClickTimer = null;
+            console.log(`🎯 点击区域: ${region}`);
+            void handleCompanionSingleClick(region);
+        }, 220);
+    });
+
     hitArea.addEventListener('dblclick', () => {
+        if (pendingSingleClickTimer !== null) {
+            window.clearTimeout(pendingSingleClickTimer);
+            pendingSingleClickTimer = null;
+        }
+        markUserActivity();
         void openChat();
     });
 
     const bubble = document.getElementById('reaction-bubble');
     bubble?.addEventListener('click', () => {
+        markUserActivity();
         void openChat();
     });
 }
@@ -1909,7 +2114,9 @@ function bindCharacterInteractions() {
 // ============== 聊天窗口 ==============
 
 async function openChat() {
+    const proactiveSeed = pendingProactiveChatSeed;
     hideReactionBubble();
+    markUserActivity();
     try {
         await ensureChatHistoryLoaded();
     } catch (error) {
@@ -1920,6 +2127,9 @@ async function openChat() {
     if (chatWindow) {
         chatWindow.classList.add('visible');
         chatWindowVisible = true;
+    }
+    if (proactiveSeed) {
+        addMessage('assistant', proactiveSeed);
     }
     logProductEvent('chat_opened', { character: currentCharacter });
 }
@@ -2010,6 +2220,7 @@ async function sendMessage() {
     if (!text) return;
 
     input.value = '';
+    markUserActivity();
 
     setCompanionState('listening');
     addMessage('user', text);
@@ -2383,9 +2594,12 @@ document.addEventListener('keydown', (e) => {
 // ============== 初始化 ==============
 
 window.addEventListener('DOMContentLoaded', async () => {
+    appSessionStartedAt = Date.now();
+    lastUserActivityAt = Date.now();
     bindContextMenuActions();
     bindCharacterInteractions();
     bindFirstRunCreator();
+    startProactiveLoop();
 
     // 绑定聊天窗口关闭按钮
     const closeBtn = document.querySelector('.close-btn');
@@ -2403,6 +2617,26 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (settingsCloseBtn) {
         settingsCloseBtn.addEventListener('click', closeSettingsPanel);
     }
+
+    const testMorningBtn = document.getElementById('test-morning-btn');
+    testMorningBtn?.addEventListener('click', () => {
+        void triggerProactivePreview('morning_greeting');
+    });
+
+    const testWeatherBtn = document.getElementById('test-weather-btn');
+    testWeatherBtn?.addEventListener('click', () => {
+        void triggerProactivePreview('weather_update');
+    });
+
+    const testMealBtn = document.getElementById('test-meal-btn');
+    testMealBtn?.addEventListener('click', () => {
+        void triggerProactivePreview('meal_time');
+    });
+
+    const testRestBtn = document.getElementById('test-rest-btn');
+    testRestBtn?.addEventListener('click', () => {
+        void triggerProactivePreview('long_work_session');
+    });
 
     const modelCloseBtn = document.querySelector('.model-close-btn');
     if (modelCloseBtn) {
