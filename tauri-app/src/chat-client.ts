@@ -40,6 +40,10 @@ export interface ImportedModelItem {
     is_active: boolean;
 }
 
+export interface DataDirInfo {
+    data_dir: string;
+}
+
 export class ApiRequestError extends Error {
     status: number;
     detail: string | null;
@@ -290,6 +294,26 @@ export class ChatClient {
         }
     }
 
+    public async loadDataDir(): Promise<DataDirInfo> {
+        const response = await fetch(this.getEndpointUrl('data-dir'));
+        if (!response.ok) {
+            throw new Error(`Data dir request failed: ${response.status}`);
+        }
+        return await response.json() as DataDirInfo;
+    }
+
+    public async saveDataDir(dataDir: string): Promise<DataDirInfo> {
+        const response = await fetch(this.getEndpointUrl('data-dir'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ data_dir: dataDir, migrate_existing: true }),
+        });
+        if (!response.ok) {
+            throw await this.buildApiRequestError('Save data dir failed', response);
+        }
+        return await response.json() as DataDirInfo;
+    }
+
     // 调用 AI 接口
     private async callAI(userMessage: string): Promise<ChatMessage> {
         // 方案 1: 调用本地 Python 后端
@@ -341,7 +365,7 @@ export class ChatClient {
         return responses[Math.floor(Math.random() * responses.length)];
     }
 
-    private getEndpointUrl(kind: 'chat' | 'chat-stream' | 'history' | 'memory' | 'companions' | 'companions-active' | 'models-imported'): string {
+    private getEndpointUrl(kind: 'chat' | 'chat-stream' | 'history' | 'memory' | 'companions' | 'companions-active' | 'models-imported' | 'data-dir'): string {
         const endpoint = new URL(this.config.apiEndpoint || 'http://localhost:8080/chat');
         const pathSegments = endpoint.pathname.split('/').filter(Boolean);
 
@@ -353,6 +377,7 @@ export class ChatClient {
             companions: 'companions',
             'companions-active': 'companions/active',
             'models-imported': 'models/imported',
+            'data-dir': 'data-dir',
         }[kind];
 
         if (pathSegments.length === 0) {

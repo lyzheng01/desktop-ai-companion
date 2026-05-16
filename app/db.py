@@ -7,7 +7,10 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 import json
 
-from .config import DB_PATH
+from . import config as config_module
+
+
+DB_PATH = config_module.DB_PATH
 
 
 def get_connection() -> sqlite3.Connection:

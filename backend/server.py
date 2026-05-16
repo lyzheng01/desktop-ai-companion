@@ -25,7 +25,15 @@ from pydantic import BaseModel, Field, field_validator
 from typing import List
 import uvicorn
 
-from app.config import AppConfig, TIME_PATTERN, get_config, save_config as persist_config
+from app.config import (
+    AppConfig,
+    TIME_PATTERN,
+    get_config,
+    get_data_dir,
+    get_imported_models_dir,
+    save_config as persist_config,
+    set_data_dir,
+)
 from app.db import (
     clear_messages,
     create_companion,
@@ -57,7 +65,31 @@ class ChatResponse(BaseModel):
 
 
 class ProactiveMessageResponse(BaseModel):
+    trigger: str | None = None
     content: str
+
+
+class DataDirResponse(BaseModel):
+    data_dir: str
+
+
+class DataDirUpdateRequest(BaseModel):
+    data_dir: str
+    migrate_existing: bool = True
+
+
+def migrate_data_dir_contents(source: Path, target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    if not source.exists() or source.resolve() == target.resolve():
+        return
+
+    for entry in source.iterdir():
+        destination = target / entry.name
+        if entry.is_dir():
+            shutil.copytree(entry, destination, dirs_exist_ok=True)
+        else:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(entry, destination)
 
 
 class MemoryCreateRequest(BaseModel):
@@ -396,11 +428,44 @@ def build_proactive_weather_line(location: str = "合肥") -> str:
     data = response.json()
     current = data.get("current", {})
     daily = data.get("daily", {})
-    desc = describe_weather_code(current.get("weather_code"))
-    temp_c = current.get("temperature_2m", "?")
-    max_temp = (daily.get("temperature_2m_max") or ["?"])[0]
-    min_temp = (daily.get("temperature_2m_min") or ["?"])[0]
-    return f"{resolved_name}今天{desc}，现在大约{temp_c}°C，白天大概 {min_temp}°C 到 {max_temp}°C。"
+    weather_code = current.get("weather_code")
+    desc = describe_weather_code(weather_code)
+    temp_c = float(current.get("temperature_2m", 0) or 0)
+    max_temp = float((daily.get("temperature_2m_max") or [0])[0] or 0)
+    min_temp = float((daily.get("temperature_2m_min") or [0])[0] or 0)
+
+    rainy_codes = {51, 53, 55, 61, 63, 65, 80, 81, 82, 95}
+    if weather_code in rainy_codes:
+        return f"{resolved_name}今天{desc}，出门可能会淋到雨，记得带伞。"
+    if max_temp >= 30 or temp_c >= 29:
+        return f"{resolved_name}今天{desc}，气温偏高，出门记得补水，别晒太久。"
+    if min_temp <= 12 or temp_c <= 10:
+        return f"{resolved_name}今天{desc}，会有点凉，出门记得多穿一件。"
+    return f"{resolved_name}今天{desc}，现在大约{temp_c:.1f}°C，白天大概 {min_temp:.1f}°C 到 {max_temp:.1f}°C。"
+
+
+def build_care_followup_line() -> str | None:
+    discomfort_tokens = ["不舒服", "难受", "头疼", "胃疼", "感冒", "发烧", "恶心", "疼", "不太舒服"]
+    yesterday = datetime.now().date().fromordinal(datetime.now().date().toordinal() - 1)
+    for item in reversed(get_messages(limit=200)):
+        if item.get("role") != "user":
+            continue
+        timestamp = item.get("timestamp")
+        if not timestamp:
+            continue
+        try:
+            message_day = datetime.fromisoformat(str(timestamp)).date()
+        except ValueError:
+            try:
+                message_day = datetime.strptime(str(timestamp), "%Y-%m-%d %H:%M:%S").date()
+            except ValueError:
+                continue
+        if message_day != yesterday:
+            continue
+        content = str(item.get("content") or "")
+        if any(token in content for token in discomfort_tokens):
+            return "昨天你好像有点不舒服，今天好一点了吗？"
+    return None
 
 
 def detect_base_currency(query: str) -> str:
@@ -804,7 +869,33 @@ async def health_check():
 
 @app.get("/proactive/weather", response_model=ProactiveMessageResponse)
 async def proactive_weather(location: str = "合肥"):
-    return ProactiveMessageResponse(content=build_proactive_weather_line(location))
+    return ProactiveMessageResponse(trigger="weather_update", content=build_proactive_weather_line(location))
+
+
+@app.get("/proactive/followup", response_model=ProactiveMessageResponse)
+async def proactive_followup():
+    line = build_care_followup_line()
+    return ProactiveMessageResponse(trigger="care_followup", content=line or "")
+
+
+@app.get("/data-dir", response_model=DataDirResponse)
+async def get_data_dir_endpoint():
+    return DataDirResponse(data_dir=str(get_data_dir()))
+
+
+@app.post("/data-dir", response_model=DataDirResponse)
+async def set_data_dir_endpoint(payload: DataDirUpdateRequest):
+    data_dir = payload.data_dir.strip()
+    if not data_dir:
+        raise HTTPException(status_code=400, detail="data_dir is required")
+
+    source_dir = get_data_dir()
+    target_dir = Path(data_dir).expanduser().resolve()
+    if payload.migrate_existing:
+        migrate_data_dir_contents(source_dir, target_dir)
+
+    resolved = set_data_dir(target_dir, persist_bootstrap=True)
+    return DataDirResponse(data_dir=str(resolved))
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
@@ -938,7 +1029,7 @@ async def import_model(payload: ImportedModelRequest):
 
     source_dir = source_model.parent
     slug = ''.join(ch.lower() if ch.isalnum() else '-' for ch in payload.name).strip('-') or 'imported-model'
-    target_root = PROJECT_ROOT / 'assets' / 'live2d' / 'imported' / slug
+    target_root = get_imported_models_dir() / slug
     if target_root.exists():
         shutil.rmtree(target_root)
     shutil.copytree(source_dir, target_root)

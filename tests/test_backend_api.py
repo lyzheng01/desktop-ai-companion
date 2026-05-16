@@ -56,6 +56,49 @@ def test_proactive_weather_endpoint_returns_content(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["content"] == "合肥今天晴天，适合出门。"
+    assert response.json()["trigger"] == "weather_update"
+
+
+def test_proactive_followup_endpoint_returns_content(monkeypatch):
+    monkeypatch.setattr(server_module, "build_care_followup_line", lambda: "昨天你好像有点不舒服，今天好一点了吗？")
+
+    response = client.get("/proactive/followup")
+
+    assert response.status_code == 200
+    assert response.json()["trigger"] == "care_followup"
+    assert response.json()["content"] == "昨天你好像有点不舒服，今天好一点了吗？"
+
+
+def test_data_dir_endpoint_returns_current_runtime_dir(tmp_path):
+    config_module.set_data_dir(tmp_path / 'chosen-data')
+
+    response = client.get('/data-dir')
+
+    assert response.status_code == 200
+    assert response.json()['data_dir'] == str((tmp_path / 'chosen-data').resolve())
+
+
+def test_data_dir_endpoint_updates_runtime_dir(tmp_path):
+    target = tmp_path / 'new-data-home'
+
+    response = client.post('/data-dir', json={'data_dir': str(target)})
+
+    assert response.status_code == 200
+    assert response.json()['data_dir'] == str(target.resolve())
+    assert config_module.get_data_dir() == target.resolve()
+
+
+def test_data_dir_endpoint_can_migrate_existing_files(tmp_path):
+    source = tmp_path / 'source-data'
+    source.mkdir(parents=True)
+    config_module.set_data_dir(source)
+    (source / 'config.json').write_text('{"hello":"world"}', encoding='utf-8')
+
+    target = tmp_path / 'target-data'
+    response = client.post('/data-dir', json={'data_dir': str(target), 'migrate_existing': True})
+
+    assert response.status_code == 200
+    assert (target / 'config.json').exists()
 
 
 def test_config_name_update_syncs_active_companion():

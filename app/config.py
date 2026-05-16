@@ -2,6 +2,7 @@
 配置管理模块
 """
 import json
+import os
 import re
 from pathlib import Path
 from dataclasses import dataclass, asdict, field
@@ -10,12 +11,96 @@ from typing import Optional
 
 # 应用目录
 APP_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = APP_DIR / "data"
-DB_PATH = DATA_DIR / "companion.db"
-CONFIG_FILE = DATA_DIR / "config.json"
 
-# 确保数据目录存在
-DATA_DIR.mkdir(exist_ok=True)
+APP_NAME = "Desktop AI Companion"
+DATA_DIR_ENV = "DESKTOP_AI_COMPANION_DATA_DIR"
+
+
+def _default_bootstrap_dir() -> Path:
+    if os.name == "nt":
+        appdata = os.getenv("APPDATA") or os.getenv("LOCALAPPDATA")
+        if appdata:
+            return Path(appdata) / APP_NAME
+    return APP_DIR / "data"
+
+
+BOOTSTRAP_DIR = _default_bootstrap_dir()
+BOOTSTRAP_FILE = BOOTSTRAP_DIR / "bootstrap.json"
+
+
+def _normalize_data_dir(path: Path) -> Path:
+    return path.expanduser().resolve()
+
+
+def _load_bootstrap_data_dir() -> Path | None:
+    if not BOOTSTRAP_FILE.exists():
+        return None
+    try:
+        with open(BOOTSTRAP_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        raw_path = data.get("data_dir")
+        if isinstance(raw_path, str) and raw_path.strip():
+            return _normalize_data_dir(Path(raw_path))
+    except (json.JSONDecodeError, OSError, TypeError, ValueError):
+        return None
+    return None
+
+
+def resolve_data_dir() -> Path:
+    env_path = os.getenv(DATA_DIR_ENV, "").strip()
+    if env_path:
+        return _normalize_data_dir(Path(env_path))
+
+    bootstrap_path = _load_bootstrap_data_dir()
+    if bootstrap_path is not None:
+        return bootstrap_path
+
+    return APP_DIR / "data"
+
+
+def _refresh_paths() -> None:
+    global DATA_DIR, DB_PATH, CONFIG_FILE
+    DATA_DIR = resolve_data_dir()
+    DB_PATH = DATA_DIR / "companion.db"
+    CONFIG_FILE = DATA_DIR / "config.json"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def set_data_dir(path: Path, persist_bootstrap: bool = False) -> Path:
+    normalized = _normalize_data_dir(path)
+    os.environ[DATA_DIR_ENV] = str(normalized)
+    if persist_bootstrap:
+        BOOTSTRAP_DIR.mkdir(parents=True, exist_ok=True)
+        with open(BOOTSTRAP_FILE, "w", encoding="utf-8") as f:
+            json.dump({"data_dir": str(normalized)}, f, ensure_ascii=False, indent=2)
+    _refresh_paths()
+    return DATA_DIR
+
+
+def get_data_dir() -> Path:
+    return DATA_DIR
+
+
+def get_db_path() -> Path:
+    return DB_PATH
+
+
+def get_config_file() -> Path:
+    return CONFIG_FILE
+
+
+def get_imported_models_dir() -> Path:
+    path = DATA_DIR / "live2d" / "imported"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def get_imported_preview_dir() -> Path:
+    path = DATA_DIR / "model-previews" / "imported"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+_refresh_paths()
 
 TIME_PATTERN = re.compile(r"(?:[01]\d|2[0-3]):[0-5]\d")
 

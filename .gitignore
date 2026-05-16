@@ -48,3 +48,6 @@ Thumbs.db
 
 # Tauri / Rust build outputs
 tauri-app/src-tauri/target/
+tauri-app/node_modules/
+backend-build/
+backend-dist/
