@@ -103,6 +103,99 @@ export class ChatClient {
         return this.callAI(content);
     }
 
+    public async streamAndYield(
+        content: string,
+        onDelta: (chunk: string) => void,
+        onState?: (state: string) => void,
+    ): Promise<string> {
+        const userMsg: ChatMessage = {
+            role: 'user',
+            content,
+            timestamp: new Date().toISOString(),
+        };
+        this.messages.push(userMsg);
+
+        const response = await fetch(this.getEndpointUrl('chat-stream'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                message: content,
+                context: this.messages.slice(-10),
+            }),
+        }).catch(() => null);
+
+        if (!response || !response.ok || !response.body) {
+            return this.fallbackFromStreaming(content, onDelta, onState);
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let currentEvent = '';
+        let finalContent = '';
+
+        const processBlock = (block: string) => {
+            const lines = block.split('\n');
+            let data = '';
+
+            for (const rawLine of lines) {
+                const line = rawLine.trimEnd();
+                if (line.startsWith('event:')) {
+                    currentEvent = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                    data += line.slice(5).trimStart();
+                }
+            }
+
+            if ((currentEvent === 'state' || currentEvent === 'phase') && onState) {
+                onState(data);
+            }
+            if (currentEvent === 'assistant_delta') {
+                finalContent += data;
+                onDelta(data);
+            }
+        };
+
+        while (true) {
+            const { done, value } = await reader.read();
+            buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+            const blocks = buffer.split('\n\n');
+            buffer = blocks.pop() || '';
+
+            for (const block of blocks) {
+                processBlock(block);
+            }
+
+            if (done) {
+                break;
+            }
+        }
+
+        if (buffer.trim()) {
+            processBlock(buffer);
+        }
+
+        const aiMsg: ChatMessage = {
+            role: 'assistant',
+            content: finalContent,
+            timestamp: new Date().toISOString(),
+        };
+        this.messages.push(aiMsg);
+        return finalContent;
+    }
+
+    private async fallbackFromStreaming(
+        content: string,
+        onDelta: (chunk: string) => void,
+        onState?: (state: string) => void,
+    ): Promise<string> {
+        onState?.('thinking');
+        const fallbackMessage = await this.callAI(content);
+        onDelta(fallbackMessage.content);
+        return fallbackMessage.content;
+    }
+
     public async loadHistory(limit: number = 20): Promise<ChatMessage[]> {
         const historyEndpoint = this.getEndpointUrl('history');
 
@@ -248,12 +341,13 @@ export class ChatClient {
         return responses[Math.floor(Math.random() * responses.length)];
     }
 
-    private getEndpointUrl(kind: 'chat' | 'history' | 'memory' | 'companions' | 'companions-active' | 'models-imported'): string {
+    private getEndpointUrl(kind: 'chat' | 'chat-stream' | 'history' | 'memory' | 'companions' | 'companions-active' | 'models-imported'): string {
         const endpoint = new URL(this.config.apiEndpoint || 'http://localhost:8080/chat');
         const pathSegments = endpoint.pathname.split('/').filter(Boolean);
 
         const targetPath = {
             chat: 'chat',
+            'chat-stream': 'chat/stream',
             history: 'history',
             memory: 'memory',
             companions: 'companions',

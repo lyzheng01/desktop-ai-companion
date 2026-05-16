@@ -197,6 +197,45 @@ def set_active_companion(companion_id: int):
     conn.commit()
     conn.close()
 
+
+def update_companion(
+    companion_id: int,
+    *,
+    name: str | None = None,
+    character_type: str | None = None,
+    personality_tags: list[str] | None = None,
+    interaction_mode: str | None = None,
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+    updates: list[str] = []
+    values: list[Any] = []
+
+    if name is not None:
+        updates.append("name = ?")
+        values.append(name)
+    if character_type is not None:
+        updates.append("type = ?")
+        values.append(character_type)
+    if personality_tags is not None:
+        updates.append("personality = ?")
+        values.append(json.dumps(personality_tags, ensure_ascii=False))
+    if interaction_mode is not None:
+        updates.append("interaction_mode = ?")
+        values.append(interaction_mode)
+
+    if not updates:
+        conn.close()
+        return
+
+    values.append(companion_id)
+    cursor.execute(
+        f"UPDATE characters SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        values,
+    )
+    conn.commit()
+    conn.close()
+
 def save_setting(key: str, value: Any):
     """保存设置"""
     conn = get_connection()

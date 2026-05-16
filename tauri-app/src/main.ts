@@ -37,7 +37,7 @@ type CharacterBehavior = {
 
 type CharacterRegion = 'face' | 'chest' | 'arms' | 'belly' | 'legs';
 type HiyoriActionHandler = () => void;
-type CompanionState = 'idle' | 'listening' | 'thinking' | 'talking';
+type CompanionState = 'idle' | 'listening' | 'thinking' | 'searching' | 'composing' | 'talking';
 
 let app: PIXI.Application;
 let currentModel: any = null;
@@ -177,6 +177,7 @@ const live2dDebugState = {
     talkingActive: false,
     hiyoriActions: null as Record<HiyoriAction, string> | null,
 };
+let stateIndicatorMode: CompanionState | null = null;
 
 function logProductEvent(name: string, payload: Record<string, unknown> = {}) {
     console.log(`PRODUCT_EVENT ${name} ${JSON.stringify(payload)}`);
@@ -185,6 +186,59 @@ function logProductEvent(name: string, payload: Record<string, unknown> = {}) {
 function setCompanionState(state: CompanionState) {
     document.body.dataset.companionState = state;
     console.log(`COMPANION_STATE: ${state}`);
+    updateCompanionStateFeedback(state);
+    updateChatStatus(state);
+}
+
+function updateChatStatus(state: CompanionState) {
+    const status = document.getElementById('chat-status');
+    const statusText = document.getElementById('chat-status-text');
+    if (!status || !statusText) return;
+
+    const labelMap: Partial<Record<CompanionState, string>> = {
+        listening: '在听你说',
+        thinking: '想一下',
+        searching: '正在查询',
+        composing: '整理回答',
+        talking: '正在回复',
+    };
+
+    const label = labelMap[state];
+    if (!label) {
+        status.classList.remove('visible');
+        return;
+    }
+
+    statusText.textContent = label;
+    status.classList.add('visible');
+}
+
+function updateCompanionStateFeedback(state: CompanionState) {
+    if (state === 'searching') {
+        showPersistentIndicator('正在查询');
+        animateFocus(app.screen.width * 0.58, app.screen.height * 0.24, 900);
+        void playRandomExpression();
+        stateIndicatorMode = state;
+        return;
+    }
+
+    if (state === 'composing') {
+        showPersistentIndicator('整理回答');
+        animateFocus(app.screen.width * 0.46, app.screen.height * 0.22, 900);
+        stateIndicatorMode = state;
+        return;
+    }
+
+    if (state === 'thinking') {
+        showPersistentIndicator('想一下');
+        stateIndicatorMode = state;
+        return;
+    }
+
+    if (stateIndicatorMode !== null) {
+        hideActionIndicator();
+        stateIndicatorMode = null;
+    }
 }
 
 async function loadAppSettings(options: {
@@ -1334,6 +1388,31 @@ function showActionIndicator(label: string, durationMs: number) {
     }, Math.max(500, durationMs - 120));
 }
 
+function showPersistentIndicator(label: string) {
+    const indicator = document.getElementById('action-indicator');
+    if (!indicator) return;
+
+    if (actionIndicatorTimer !== null) {
+        window.clearTimeout(actionIndicatorTimer);
+        actionIndicatorTimer = null;
+    }
+
+    indicator.textContent = label;
+    indicator.classList.add('visible');
+}
+
+function hideActionIndicator() {
+    const indicator = document.getElementById('action-indicator');
+    if (!indicator) return;
+
+    if (actionIndicatorTimer !== null) {
+        window.clearTimeout(actionIndicatorTimer);
+        actionIndicatorTimer = null;
+    }
+
+    indicator.classList.remove('visible');
+}
+
 async function playMotionFromGroups(groups: string[]) {
     if (!currentModel) return false;
 
@@ -1939,9 +2018,30 @@ async function sendMessage() {
 
     try {
         setCompanionState('thinking');
-        const response = await chatClient.sendAndReturn(text);
-        addMessage('assistant', response.content);
-        startTalkingAnimation(response.content);
+        let assistantContent = '';
+        let assistantMessageContent = addLoadingAssistantMessage();
+
+        const finalContent = await chatClient.streamAndYield(
+            text,
+            (chunk) => {
+                setAssistantMessageLoading(assistantMessageContent, false);
+                setCompanionState('talking');
+                assistantContent += chunk;
+                assistantMessageContent.textContent = assistantContent;
+                scrollChatToBottom();
+            },
+            (state) => {
+                if (state === 'thinking' || state === 'searching' || state === 'composing') {
+                    setCompanionState(state);
+                }
+            },
+        );
+
+        if (!assistantContent.trim()) {
+            setAssistantMessageLoading(assistantMessageContent, false);
+            assistantMessageContent.textContent = finalContent;
+        }
+        startTalkingAnimation(finalContent);
     } catch (error) {
         console.error('❌ 发送消息失败:', error);
         setCompanionState('idle');
@@ -1949,9 +2049,9 @@ async function sendMessage() {
     }
 }
 
-function addMessage(role: string, content: string) {
+function addMessage(role: string, content: string): HTMLDivElement | null {
     const messagesContainer = document.getElementById('chat-messages');
-    if (!messagesContainer) return;
+    if (!messagesContainer) return null;
 
     const messageDiv = document.createElement('div');
     messageDiv.className = `message ${role}`;
@@ -1963,7 +2063,40 @@ function addMessage(role: string, content: string) {
     messageDiv.appendChild(contentDiv);
     messagesContainer.appendChild(messageDiv);
 
-    // 滚动到底部
+    scrollChatToBottom();
+    return contentDiv;
+}
+
+function addLoadingAssistantMessage(): HTMLDivElement {
+    const messagesContainer = document.getElementById('chat-messages');
+    const messageDiv = document.createElement('div');
+    messageDiv.className = 'message assistant loading';
+
+    const contentDiv = document.createElement('div');
+    contentDiv.className = 'message-content';
+    contentDiv.innerHTML = '<span class="typing-dots"><span></span><span></span><span></span></span>';
+
+    messageDiv.appendChild(contentDiv);
+    messagesContainer?.appendChild(messageDiv);
+    scrollChatToBottom();
+    return contentDiv;
+}
+
+function setAssistantMessageLoading(contentDiv: HTMLDivElement | null, loading: boolean) {
+    const messageDiv = contentDiv?.parentElement;
+    if (!messageDiv) return;
+
+    if (loading) {
+        messageDiv.classList.add('loading');
+    } else {
+        messageDiv.classList.remove('loading');
+    }
+}
+
+function scrollChatToBottom() {
+    const messagesContainer = document.getElementById('chat-messages');
+    if (!messagesContainer) return;
+
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 

@@ -540,6 +540,13 @@
             cursor: grab;
         }
 
+        .chat-header-main {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 0;
+        }
+
         .chat-header:active {
             cursor: grabbing;
         }
@@ -547,6 +554,45 @@
         .chat-header h3 {
             font-size: 14px;
             font-weight: 600;
+        }
+
+        #chat-status {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.92);
+        }
+
+        #chat-status.visible {
+            display: inline-flex;
+        }
+
+        #chat-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.95);
+            box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.55);
+        }
+
+        #chat-status.visible #chat-status-dot {
+            animation: chat-status-pulse 1s ease-in-out infinite;
+        }
+
+        @keyframes chat-status-pulse {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.45);
+            }
+            70% {
+                transform: scale(1.1);
+                box-shadow: 0 0 0 8px rgba(255, 255, 255, 0);
+            }
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+            }
         }
 
         .chat-header .close-btn {
@@ -601,6 +647,47 @@
             background: white;
             color: #333;
             border: 1px solid #e0e0e0;
+        }
+
+        .message.assistant.loading .message-content {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 64px;
+            min-height: 40px;
+        }
+
+        .typing-dots {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .typing-dots span {
+            width: 7px;
+            height: 7px;
+            border-radius: 999px;
+            background: #98a2b3;
+            animation: typing-bounce 1s ease-in-out infinite;
+        }
+
+        .typing-dots span:nth-child(2) {
+            animation-delay: 0.15s;
+        }
+
+        .typing-dots span:nth-child(3) {
+            animation-delay: 0.3s;
+        }
+
+        @keyframes typing-bounce {
+            0%, 80%, 100% {
+                transform: translateY(0);
+                opacity: 0.45;
+            }
+            40% {
+                transform: translateY(-4px);
+                opacity: 1;
+            }
         }
 
         .chat-input-area {
@@ -827,7 +914,13 @@
         <!-- 聊天窗口 -->
         <div id="chat-window">
             <div class="chat-header">
-                <h3 id="chat-title">小艾 AI</h3>
+                <div class="chat-header-main">
+                    <h3 id="chat-title">小艾 AI</h3>
+                    <div id="chat-status">
+                        <span id="chat-status-dot"></span>
+                        <span id="chat-status-text">想一下</span>
+                    </div>
+                </div>
                 <button class="close-btn">×</button>
             </div>
             <div class="chat-messages" id="chat-messages"></div>

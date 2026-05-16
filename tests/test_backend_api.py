@@ -6,9 +6,10 @@ import pytest
 import app.config as config_module
 import app.db as db_module
 from app.config import AppConfig, save_config
-from app.db import create_companion, set_active_companion
+from app.db import create_companion, get_active_companion, set_active_companion
 from app.db import clear_messages, get_messages
 from backend.server import app
+import backend.server as server_module
 
 
 client = TestClient(app)
@@ -36,6 +37,33 @@ def test_health_endpoint_returns_ok():
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
+
+
+def test_chat_prefers_native_live_response_for_live_queries(monkeypatch):
+    monkeypatch.setattr(server_module, "generate_native_live_response", lambda message, context, config: "你，今天是 2026年05月16日，星期六。")
+    monkeypatch.setattr(server_module, "search_web", lambda query: (_ for _ in ()).throw(AssertionError("search_web should not be called")))
+
+    response = client.post("/chat", json={"message": "今天多少号", "context": []})
+
+    assert response.status_code == 200
+    assert "2026年05月16日" in response.json()["content"]
+
+
+def test_config_name_update_syncs_active_companion():
+    companion_id = create_companion(
+        name="小艾",
+        character_type="hiyori_pro_zh",
+        personality_tags=["温柔"],
+        interaction_mode="work",
+        is_active=True,
+    )
+    set_active_companion(companion_id)
+
+    response = client.post("/config", json={"character_name": "小天"})
+
+    assert response.status_code == 200
+    assert response.json()["character_name"] == "小天"
+    assert get_active_companion()["name"] == "小天"
 
 
 def test_config_round_trip_persists_values():
