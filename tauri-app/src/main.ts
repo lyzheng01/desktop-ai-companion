@@ -498,10 +498,6 @@ function getModelPreviewCandidates(modelPath: string) {
         `${dir}/preview.jpg`,
         `${dir}/${stem}.png`,
         `${dir}/${stem}.jpg`,
-        `${dir}/${stem}.1024/texture_00.png`,
-        `${dir}/${stem}.2048/texture_00.png`,
-        `${dir}/${stem}.4096/texture_00.png`,
-        `${dir}/texture_00.png`,
     ];
 
     return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
@@ -522,7 +518,14 @@ function buildModelCard(name: string, detailText: string, modelKey: string, mode
     let previewIndex = 0;
     const tryNextPreview = () => {
         const next = previewCandidates[previewIndex++];
-        if (!next) return;
+        if (!next) {
+            img.remove();
+            const placeholder = document.createElement('div');
+            placeholder.className = 'model-thumb-placeholder';
+            placeholder.innerHTML = `<strong>${name}</strong><span>暂无预览图</span>`;
+            thumb.appendChild(placeholder);
+            return;
+        }
         img.src = next;
     };
     img.alt = name;
@@ -1873,8 +1876,46 @@ declare global {
         __live2dDebugState?: typeof live2dDebugState;
         __desktopCompanionDebug?: {
             triggerProactiveBubble: (trigger: ProactiveTriggerType, text: string) => Promise<void>;
+            fitCurrentModelForPreview: () => boolean;
         };
     }
+}
+
+function fitCurrentModelForPreview(): boolean {
+    if (!currentModel || !app) {
+        return false;
+    }
+
+    currentModel.scale.set(1, 1);
+    currentModel.x = 0;
+    currentModel.y = 0;
+    currentModel.rotation = 0;
+    currentModel.skew.set(0, 0);
+
+    const initialBounds = currentModel.getBounds?.();
+    if (!initialBounds || !initialBounds.width || !initialBounds.height) {
+        applyCurrentScale();
+        return false;
+    }
+
+    const targetWidth = app.screen.width * 0.78;
+    const targetHeight = app.screen.height * 0.84;
+    const scale = Math.min(targetWidth / initialBounds.width, targetHeight / initialBounds.height);
+    currentModel.scale.set(scale, scale);
+
+    const fittedBounds = currentModel.getBounds?.();
+    if (!fittedBounds) {
+        applyCurrentScale();
+        return false;
+    }
+
+    const targetCenterX = app.screen.width * 0.5;
+    const targetCenterY = app.screen.height * 0.56;
+    const currentCenterX = fittedBounds.x + fittedBounds.width / 2;
+    const currentCenterY = fittedBounds.y + fittedBounds.height / 2;
+    currentModel.x += targetCenterX - currentCenterX;
+    currentModel.y += targetCenterY - currentCenterY;
+    return true;
 }
 
 window.__live2dDebugState = live2dDebugState;
@@ -1882,6 +1923,7 @@ window.__desktopCompanionDebug = {
     triggerProactiveBubble: async (trigger, text) => {
         await showProactiveBubble(trigger, text);
     },
+    fitCurrentModelForPreview: () => fitCurrentModelForPreview(),
 };
 live2dDebugState.hiyoriActions = Object.fromEntries(
     HIYORI_ACTION_KEYS.map((key) => [key, HIYORI_ACTIONS[key].label]),

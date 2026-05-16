@@ -12,20 +12,6 @@ DIST_DIR = REPO_ROOT / 'tauri-app' / 'dist'
 PREVIEW_ROOT = REPO_ROOT / 'assets' / 'model-previews'
 FRONTEND_URL = 'http://127.0.0.1:4175'
 
-BUILTIN_LABELS = [
-    'Kei',
-    'Chitose',
-    'Hiyori JP',
-    'Shizuku',
-    'Hiyori',
-    'Mao',
-    'Miara',
-    'Miku',
-    'Natori',
-    'Ren',
-]
-
-
 def wait_for_server(url: str, timeout: float = 12.0) -> None:
     import requests
 
@@ -51,6 +37,12 @@ def ensure_dirs() -> None:
     (PREVIEW_ROOT / 'imported').mkdir(parents=True, exist_ok=True)
 
 
+def clear_existing_previews() -> None:
+    for folder in (PREVIEW_ROOT / 'builtin', PREVIEW_ROOT / 'imported'):
+        for path in folder.glob('*.png'):
+            path.unlink(missing_ok=True)
+
+
 def save_preview(locator, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     locator.screenshot(path=str(path))
@@ -58,6 +50,7 @@ def save_preview(locator, path: Path) -> None:
 
 def main() -> None:
     ensure_dirs()
+    clear_existing_previews()
     imported_models = load_imported_models()
 
     server = subprocess.Popen(
@@ -83,26 +76,31 @@ def main() -> None:
 
             def save_current_character_preview(path: Path):
                 page.wait_for_timeout(2200)
+                page.evaluate("window.__desktopCompanionDebug?.fitCurrentModelForPreview?.()")
+                page.wait_for_timeout(250)
                 save_preview(page.locator('#character-container'), path)
 
             open_panel()
 
-            for label in BUILTIN_LABELS:
-                card = page.locator('.model-card').filter(has_text=label).first
-                if card.count() == 0:
-                    continue
+            builtin_cards = page.locator('#builtin-model-list .model-card')
+            builtin_count = builtin_cards.count()
+            for index in range(builtin_count):
+                card = builtin_cards.nth(index)
                 button = card.locator('button').first
+                model_key = card.get_attribute('data-model-key')
+                if not model_key:
+                    continue
                 if button.is_enabled():
                     button.click()
-                    save_current_character_preview(PREVIEW_ROOT / 'builtin' / f'{card.get_attribute("data-model-key")}.png')
+                    save_current_character_preview(PREVIEW_ROOT / 'builtin' / f'{model_key}.png')
                     open_panel()
-                    card = page.locator('.model-card').filter(has_text=label).first
+                    builtin_cards = page.locator('#builtin-model-list .model-card')
                 else:
-                    save_current_character_preview(PREVIEW_ROOT / 'builtin' / f'{card.get_attribute("data-model-key")}.png')
+                    save_current_character_preview(PREVIEW_ROOT / 'builtin' / f'{model_key}.png')
 
             for item in imported_models:
-                label = item['name']
-                card = page.locator('.model-card').filter(has_text=label).first
+                model_key = f"imported:{item['id']}"
+                card = page.locator(f'.model-card[data-model-key="{model_key}"]').first
                 if card.count() == 0:
                     continue
                 button = card.locator('button').first
@@ -110,7 +108,7 @@ def main() -> None:
                     button.click()
                     save_current_character_preview(PREVIEW_ROOT / 'imported' / f"{item['id']}.png")
                     open_panel()
-                    card = page.locator('.model-card').filter(has_text=label).first
+                    card = page.locator(f'.model-card[data-model-key="{model_key}"]').first
                 else:
                     save_current_character_preview(PREVIEW_ROOT / 'imported' / f"{item['id']}.png")
 
