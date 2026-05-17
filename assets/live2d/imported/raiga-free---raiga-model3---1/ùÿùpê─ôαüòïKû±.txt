@@ -1,0 +1,85 @@
+★★★ご利用案内★★★
+Raiga_FreeLive2DモデルをDL頂きまして有難うございます。
+ご利用に連絡等は不要ですが権利はすべて制作者百合庵にあります。
+不明な点はツイッター先にお問い合わせください。
+
+・個人的利用（YouTube/TikTokなど収入を得る動画配信サイト含む）でのVtuberモデルとしての使用が可能です。
+・個人的枠を超えた商用利用はご遠慮ください。
+・服の着せ替え、モデリング変更などはご自由に変更ください。
+・転載や再配布、ならびに自作発言は禁止です。
+・利用の際は概要欄などに以下の一文を記載ください。
+
+　【Live2D・キャラ作成、デザイン】百合庵　https://kokiden.booth.pm/　Twitter：@kira_mudo
+
+
+
+【クレジット】
+Author：キャラデザ；百合庵（Julian）　
+Twitter：@kira_mudo
+All ownership belongs to Julian
+
+【対応ソフト】
+Vtube Stadio　対応
+FaceRig/Animaize 対応
+
+【導入方法】
+FaceRig/VtubeStadio
+（FaceRig）→FaceRigのObjectフォルダに　解凍した利用案内＆規約txt以外の全てをフォルダごと移動させてください。
+（Animaze）→モデル選択で「Raiga＿Free.moc3」データを選択ください。
+（Vtube Stadio）→VTS指定のフォルダに　解凍したフォルダをそのまま移動させてください。
+
+
+【書き出し対応】SDK4.0/Cubism4.0
+【キャンパスサイズ】1024×1280
+【ZIP内データ内容】
+　フォルダ名：Raiga＿Freeフォルダ
+　　-Raiga_1024フォルダ
+　　-Raiga＿Free.moc3　（モデルデータ）M/G
+　　-Raiga.vtube.json　（物理演算情報）
+　　-Raiga.cdi3.json
+　　-items_pinned_to_model.json
+　　-Raiga.model3.json
+　　-Raiga.PNG　（アイコンデータ）
+　　-利用案内＆規約.txt　（利用案内説明書）
+
+--------------------------------------------------------------------------------------------------
+★★★ User Guide ★★★
+Thank you for DLing the Raiga_FreeLive2D model.
+There is no need to contact the user, but all rights are in the hands of the creator Yurian.
+
+・ It can be used as a Vtuber model for personal use (including video distribution sites that earn income such as YouTube / TikTok).
+・Please refrain from commercial use beyond personal limits.
+・ Please feel free to change the dress up of clothes, change the modeling, etc.
+・Reprinting, redistribution, and self-made remarks are prohibited.
+・When using, please write the following sentence in the summary column.
+
+【Live2D・Character creation・Design】Yurian https://kokiden.booth.pm/ Twitter:@kira_mudo
+
+【Credits】
+Author:Caradeza; Julian
+Twitter：@kira_mudo
+All ownership belongs to Julian
+
+【Compatible software】
+Vtube Stadio support
+FaceRig/Animaize support
+
+【Introduction method】
+FaceRig/VtubeStadio
+(FaceRig) → Move everything except the unzipped usage guide & agreement txt to the FaceRig Object folder by folder.
+Select the "Raiga_Free.moc3" data in the (Animaze) → model selection.
+(Vtube Stadio) → Move the extracted folder to the folder specified by VTS as it is.
+
+
+【Export support】 SDK4.0/Cubism4.0
+【Campus Size】1024×1280
+【Data contents in ZIP】
+Folder Name: Raiga_Free Folder
+-Raiga_1024 folder
+-Raiga_Free.moc3 (model data)M/G
+-Raiga.vtube.json (physics information)
+-Raiga.cdi3.json
+-items_pinned_to_model.json
+-Raiga.model3.json
+-Raiga.PNG (icon data)
+-User Guide & Terms and Conditions.txt (User's Guide Manual)

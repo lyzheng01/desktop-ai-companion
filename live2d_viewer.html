@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Live2D Character - Kei</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: transparent;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        #app {
+            width: 400px;
+            height: 500px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+
+    <!-- PixiJS -->
+    <script src="https://cdn.jsdelivr.net/npm/pixi.js@5.x/dist/pixi.min.js"></script>
+    <!-- Live2D Cubism Core -->
+    <script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+    <!-- Live2D Cubism SDK for Web (R20) -->
+    <script src="https://cdn.jsdelivr.net/npm/live2d-cubism-web-rendering@5.0.0/dist/live2dcubismweb.min.js"></script>
+
+    <script>
+        // Live2D 模型路径（需要本地服务器或 file:// 协议）
+        const MODEL_PATH = './assets/live2d/kei_en/kei_basic_free/runtime/kei_basic_free.model3.json';
+
+        async function loadLive2DModel() {
+            try {
+                // 创建 PixiJS 应用
+                const app = new PIXI.Application({
+                    width: 400,
+                    height: 500,
+                    transparent: true,
+                    backgroundColor: 0x00000000,
+                    autoStart: true
+                });
+
+                document.getElementById('app').appendChild(app.view);
+
+                // 创建容器
+                const container = new PIXI.Container();
+                container.x = 200;
+                container.y = 250;
+                container.scale.set(1.5);
+                app.stage.addChild(container);
+
+                // 加载模型
+                console.log('Loading Live2D model...');
+
+                // 注意：完整的 Live2D Web 渲染需要 cubism-web-rendering
+                // 这里简化显示一个占位图形
+                const graphics = new PIXI.Graphics();
+
+                // 绘制一个可爱的圆形角色占位
+                graphics.beginFill(0xFFB6C1); // 粉色
+                graphics.drawCircle(0, 0, 100);
+                graphics.endFill();
+
+                // 眼睛
+                graphics.beginFill(0x333333);
+                graphics.drawCircle(-30, -10, 15);
+                graphics.drawCircle(30, -10, 15);
+
+                // 眼睛高光
+                graphics.beginFill(0xFFFFFF);
+                graphics.drawCircle(-25, -15, 5);
+                graphics.drawCircle(35, -15, 5);
+
+                // 嘴巴（微笑弧线）
+                graphics.lineStyle(3, 0xFF69B4);
+                graphics.drawArc(0, 20, 40, 0.2 * Math.PI, 0.8 * Math.PI);
+
+                container.addChild(graphics);
+
+                // 点击交互
+                container.interactive = true;
+                container.buttonMode = true;
+                container.on('pointerdown', () => {
+                    console.log('Character clicked!');
+                    // 挥手动画
+                    const originalRotation = container.rotation;
+                    container.rotation = 0.2;
+                    setTimeout(() => {
+                        container.rotation = originalRotation;
+                    }, 300);
+                });
+
+                // 呼吸动画
+                let breathPhase = 0;
+                app.ticker.add(() => {
+                    breathPhase += 0.05;
+                    container.scale.y = 1 + 0.02 * Math.sin(breathPhase);
+                });
+
+                // 眨眼
+                setInterval(() => {
+                    graphics.scale.y = 0.1;
+                    setTimeout(() => {
+                        graphics.scale.y = 1;
+                    }, 150);
+                }, 3000);
+
+                console.log('Live2D viewer initialized (placeholder)');
+
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        loadLive2DModel();
+    </script>
+</body>
+</html>

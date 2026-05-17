@@ -1,0 +1,7 @@
+# Desktop AI Companion - Python 后端依赖
+
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+httpx>=0.26.0  # HTTP 客户端，调用 AI API
+python-dotenv>=1.0.0

@@ -1,0 +1,24 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "散兵.moc3",
+		"Textures": [
+			"散兵.8192/texture_00.png",
+			"散兵.8192/texture_01.png"
+		],
+		"Physics": "散兵.physics3.json",
+		"DisplayInfo": "散兵.cdi3.json"
+	},
+	"Groups": [
+		{
+			"Target": "Parameter",
+			"Name": "LipSync",
+			"Ids": []
+		},
+		{
+			"Target": "Parameter",
+			"Name": "EyeBlink",
+			"Ids": []
+		}
+	]
+}

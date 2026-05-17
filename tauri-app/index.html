@@ -1,0 +1,1193 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Desktop AI Companion</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', sans-serif;
+            overflow: hidden;
+            background: transparent;
+        }
+
+        #app {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-end;
+        }
+
+        #first-run-panel {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(15, 23, 42, 0.72);
+            backdrop-filter: blur(12px);
+            z-index: 4000;
+        }
+
+        #first-run-panel.visible {
+            display: flex;
+        }
+
+        #bootstrap-error-banner {
+            position: fixed;
+            top: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: none;
+            width: min(calc(100% - 32px), 520px);
+            padding: 14px 16px;
+            border-radius: 14px;
+            background: rgba(127, 29, 29, 0.94);
+            color: white;
+            box-shadow: 0 16px 40px rgba(15, 23, 42, 0.24);
+            z-index: 4100;
+        }
+
+        #bootstrap-error-banner.visible {
+            display: block;
+        }
+
+        .first-run-card {
+            width: min(100%, 420px);
+            padding: 24px;
+            border-radius: 20px;
+            background: rgba(255, 255, 255, 0.96);
+            box-shadow: 0 20px 48px rgba(15, 23, 42, 0.28);
+        }
+
+        .first-run-card h2 {
+            font-size: 24px;
+            color: #1f2937;
+            margin-bottom: 8px;
+        }
+
+        .first-run-card p {
+            font-size: 14px;
+            line-height: 1.6;
+            color: #667085;
+            margin-bottom: 16px;
+        }
+
+        .first-run-card label {
+            display: block;
+            margin-top: 12px;
+            margin-bottom: 6px;
+            font-size: 12px;
+            color: #667085;
+        }
+
+        .first-run-card input,
+        .first-run-card select,
+        .first-run-card button {
+            width: 100%;
+            border-radius: 12px;
+            font-size: 14px;
+        }
+
+        .first-run-card input,
+        .first-run-card select {
+            border: 1px solid #d8def5;
+            background: white;
+            color: #333;
+            padding: 12px 14px;
+        }
+
+        #creator-personality-select {
+            min-height: 120px;
+        }
+
+        #creator-submit-btn {
+            margin-top: 18px;
+            border: none;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 14px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        /* Live2D 角色容器 */
+        #character-container {
+            position: fixed;
+            bottom: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 400px;
+            height: 600px;
+            pointer-events: auto;
+            background: rgba(32, 40, 64, 0.18);
+            border: 1px solid rgba(255,255,255,0.18);
+            border-radius: 18px;
+            backdrop-filter: blur(4px);
+        }
+
+        #character-hit-area {
+            position: absolute;
+            inset: 0;
+            z-index: 2;
+            background: transparent;
+            cursor: grabbing;
+        }
+
+        #character-stage {
+            position: absolute;
+            inset: 0;
+            z-index: 1;
+            transform-origin: 50% 80%;
+            transition: transform 120ms linear;
+            will-change: transform;
+        }
+
+        #action-indicator {
+            position: absolute;
+            top: 36px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 4;
+            padding: 6px 12px;
+            border-radius: 999px;
+            background: rgba(29, 41, 57, 0.72);
+            color: white;
+            font-size: 12px;
+            letter-spacing: 0.5px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 120ms linear;
+        }
+
+        #action-indicator.visible {
+            opacity: 1;
+        }
+
+        #reaction-bubble {
+            position: absolute;
+            top: 78px;
+            left: 50%;
+            transform: translate(-50%, 8px);
+            z-index: 5;
+            max-width: 220px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 180ms ease, transform 220ms ease;
+        }
+
+        #reaction-bubble.visible {
+            opacity: 1;
+            transform: translate(-50%, 0);
+            pointer-events: auto;
+        }
+
+        #reaction-bubble-text {
+            padding: 10px 14px;
+            border-radius: 16px;
+            background: rgba(255, 255, 255, 0.94);
+            border: 1px solid rgba(170, 185, 235, 0.8);
+            box-shadow: 0 10px 24px rgba(40, 58, 120, 0.16);
+            color: #344054;
+            font-size: 13px;
+            line-height: 1.45;
+            text-align: center;
+        }
+
+        #reaction-bubble-text::after {
+            content: '';
+            position: absolute;
+            left: 50%;
+            bottom: -8px;
+            width: 14px;
+            height: 14px;
+            background: rgba(255, 255, 255, 0.94);
+            border-right: 1px solid rgba(170, 185, 235, 0.8);
+            border-bottom: 1px solid rgba(170, 185, 235, 0.8);
+            transform: translateX(-50%) rotate(45deg);
+        }
+
+        #character-stage.action-nod {
+            animation: hiyori-nod 900ms ease-in-out;
+        }
+
+        #character-stage.action-shake {
+            animation: hiyori-shake 1100ms ease-in-out;
+        }
+
+        #character-stage.action-chinrest {
+            animation: hiyori-chinrest 1600ms ease-in-out;
+        }
+
+        #character-stage.action-wave {
+            animation: hiyori-wave 1300ms ease-in-out;
+        }
+
+        #character-stage.action-reject {
+            animation: hiyori-reject 1200ms ease-in-out;
+        }
+
+        #character-stage.action-crouch {
+            animation: hiyori-crouch 1300ms ease-in-out;
+        }
+
+        @keyframes hiyori-nod {
+            0%, 100% { transform: translate3d(0, 0, 0) scale(1, 1) rotate(0deg); }
+            30% { transform: translate3d(0, 18px, 0) scale(1.03, 0.9) rotate(-5deg); }
+            65% { transform: translate3d(0, 18px, 0) scale(1.03, 0.9) rotate(-5deg); }
+            82% { transform: translate3d(0, -4px, 0) scale(1.01, 0.98) rotate(1deg); }
+        }
+
+        @keyframes hiyori-shake {
+            0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg); }
+            18% { transform: translate3d(-20px, 0, 0) rotate(-7deg); }
+            38% { transform: translate3d(22px, 0, 0) rotate(7deg); }
+            58% { transform: translate3d(-20px, 0, 0) rotate(-7deg); }
+            78% { transform: translate3d(18px, 0, 0) rotate(6deg); }
+        }
+
+        @keyframes hiyori-chinrest {
+            0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1, 1); }
+            35% { transform: translate3d(-26px, 14px, 0) rotate(-12deg) scale(1.02, 0.95); }
+            75% { transform: translate3d(-26px, 14px, 0) rotate(-12deg) scale(1.02, 0.95); }
+        }
+
+        @keyframes hiyori-wave {
+            0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg); }
+            16% { transform: translate3d(24px, -12px, 0) rotate(14deg); }
+            32% { transform: translate3d(-18px, -22px, 0) rotate(-11deg); }
+            48% { transform: translate3d(26px, -12px, 0) rotate(15deg); }
+            64% { transform: translate3d(-16px, -8px, 0) rotate(-9deg); }
+            80% { transform: translate3d(14px, -4px, 0) rotate(7deg); }
+        }
+
+        @keyframes hiyori-reject {
+            0%, 100% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1, 1); }
+            18% { transform: translate3d(-22px, 12px, 0) rotate(-9deg) scale(1.03, 0.95); }
+            38% { transform: translate3d(24px, 20px, 0) rotate(10deg) scale(1.04, 0.9); }
+            58% { transform: translate3d(-20px, 18px, 0) rotate(-9deg) scale(1.03, 0.92); }
+            78% { transform: translate3d(10px, 8px, 0) rotate(4deg) scale(1.01, 0.97); }
+        }
+
+        @keyframes hiyori-crouch {
+            0%, 100% { transform: translate3d(0, 0, 0) scale(1, 1) rotate(0deg); }
+            40% { transform: translate3d(0, 88px, 0) scale(1.1, 0.68) rotate(-4deg); }
+            72% { transform: translate3d(0, 88px, 0) scale(1.1, 0.68) rotate(-4deg); }
+            88% { transform: translate3d(0, 26px, 0) scale(1.03, 0.92) rotate(1deg); }
+        }
+
+        #character-canvas {
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+            pointer-events: none;
+        }
+
+        /* 聊天窗口 */
+        #chat-window {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 380px;
+            height: 500px;
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            z-index: 1000;
+        }
+
+        #chat-window.visible {
+            display: flex;
+        }
+
+        body[data-window-label="chat"] {
+            background: #f5f7fa;
+        }
+
+        body[data-window-label="chat"] #bootstrap-error-banner,
+        body[data-window-label="chat"] #first-run-panel,
+        body[data-window-label="chat"] #character-container,
+        body[data-window-label="chat"] #settings-panel,
+        body[data-window-label="chat"] #model-panel,
+        body[data-window-label="chat"] #context-menu {
+            display: none !important;
+        }
+
+        body[data-window-label="chat"] #app {
+            justify-content: stretch;
+        }
+
+        body[data-window-label="chat"] #chat-window {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            height: 100vh;
+            border-radius: 0;
+            box-shadow: none;
+            display: flex;
+        }
+
+        body[data-window-label="settings"] {
+            background: rgba(245, 247, 250, 0.98);
+        }
+
+        body[data-window-label="settings"] #bootstrap-error-banner,
+        body[data-window-label="settings"] #first-run-panel,
+        body[data-window-label="settings"] #character-container,
+        body[data-window-label="settings"] #chat-window,
+        body[data-window-label="settings"] #model-panel,
+        body[data-window-label="settings"] #context-menu {
+            display: none !important;
+        }
+
+        body[data-window-label="settings"] #app {
+            justify-content: stretch;
+        }
+
+        body[data-window-label="settings"] #settings-panel {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            max-height: none;
+            height: 100vh;
+            border-radius: 0;
+            box-shadow: none;
+            backdrop-filter: none;
+            display: flex;
+        }
+
+        body[data-window-label="model"] {
+            background: rgba(248, 250, 255, 0.98);
+        }
+
+        body[data-window-label="model"] #bootstrap-error-banner,
+        body[data-window-label="model"] #first-run-panel,
+        body[data-window-label="model"] #character-container,
+        body[data-window-label="model"] #chat-window,
+        body[data-window-label="model"] #settings-panel,
+        body[data-window-label="model"] #context-menu {
+            display: none !important;
+        }
+
+        body[data-window-label="model"] #app {
+            justify-content: stretch;
+        }
+
+        body[data-window-label="model"] #model-panel {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            max-height: none;
+            height: 100vh;
+            border-radius: 0;
+            box-shadow: none;
+            backdrop-filter: none;
+            display: flex;
+        }
+
+        #settings-panel {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            width: 320px;
+            max-height: calc(100vh - 40px);
+            background: rgba(255,255,255,0.96);
+            border-radius: 16px;
+            box-shadow: 0 10px 32px rgba(0,0,0,0.18);
+            backdrop-filter: blur(12px);
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            z-index: 1100;
+        }
+
+        #settings-panel.visible {
+            display: flex;
+        }
+
+        .settings-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            cursor: grab;
+        }
+
+        .settings-header:active {
+            cursor: grabbing;
+        }
+
+        .settings-header h3 {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        .settings-close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            width: 24px;
+            height: 24px;
+        }
+
+        .settings-body {
+            padding: 16px;
+            display: grid;
+            gap: 12px;
+            overflow-y: auto;
+        }
+
+        .settings-item {
+            padding: 12px 14px;
+            background: #f7f8fc;
+            border-radius: 12px;
+            color: #333;
+            font-size: 13px;
+            line-height: 1.5;
+        }
+
+        .settings-item strong {
+            display: block;
+            margin-bottom: 4px;
+            font-size: 14px;
+        }
+
+        .settings-item label {
+            display: block;
+            margin-top: 10px;
+            margin-bottom: 6px;
+            font-size: 12px;
+            color: #667085;
+        }
+
+        #companion-limit-note {
+            margin-top: 8px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: #eef2ff;
+            color: #4452b8;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        #active-companion-summary {
+            margin-top: 8px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: white;
+            border: 1px solid #d8def5;
+            color: #4452b8;
+            font-size: 12px;
+            line-height: 1.5;
+        }
+
+        #create-companion-btn {
+            width: 100%;
+            margin-top: 10px;
+            border: none;
+            border-radius: 10px;
+            background: #e9edff;
+            color: #4452b8;
+            padding: 10px 12px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        #create-companion-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        #companion-list {
+            display: grid;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .companion-list-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 10px 12px;
+            border-radius: 10px;
+            background: white;
+            border: 1px solid #d8def5;
+        }
+
+        .companion-list-meta {
+            min-width: 0;
+            flex: 1;
+        }
+
+        .companion-list-name {
+            display: block;
+            color: #1f2937;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .companion-list-detail {
+            display: block;
+            color: #667085;
+            font-size: 12px;
+        }
+
+        .companion-switch-btn {
+            border: none;
+            border-radius: 999px;
+            background: #e9edff;
+            color: #4452b8;
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .companion-switch-btn:disabled {
+            background: #eef2ff;
+            color: #667085;
+            cursor: default;
+        }
+
+        .settings-item input,
+        .settings-item select {
+            width: 100%;
+            border: 1px solid #d8def5;
+            border-radius: 10px;
+            background: white;
+            padding: 10px 12px;
+            font-size: 13px;
+            color: #333;
+        }
+
+        #personality-select {
+            min-height: 132px;
+        }
+
+        .settings-scale-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        #scale-slider {
+            flex: 1;
+        }
+
+        #scale-value {
+            min-width: 48px;
+            text-align: right;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .settings-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .settings-actions button {
+            flex: 1;
+            border: none;
+            border-radius: 10px;
+            background: #e9edff;
+            color: #4452b8;
+            padding: 10px 12px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .chat-header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: grab;
+        }
+
+        .chat-header-main {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            min-width: 0;
+        }
+
+        .chat-header:active {
+            cursor: grabbing;
+        }
+
+        .chat-header h3 {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        #chat-status {
+            display: none;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.92);
+        }
+
+        #chat-status.visible {
+            display: inline-flex;
+        }
+
+        #chat-status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, 0.95);
+            box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.55);
+        }
+
+        #chat-status.visible #chat-status-dot {
+            animation: chat-status-pulse 1s ease-in-out infinite;
+        }
+
+        @keyframes chat-status-pulse {
+            0% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.45);
+            }
+            70% {
+                transform: scale(1.1);
+                box-shadow: 0 0 0 8px rgba(255, 255, 255, 0);
+            }
+            100% {
+                transform: scale(0.95);
+                box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+            }
+        }
+
+        .chat-header .close-btn {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 20px;
+            cursor: pointer;
+            padding: 0;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 12px;
+            overflow-y: auto;
+            background: #f5f7fa;
+        }
+
+        .message {
+            margin-bottom: 12px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .message.user {
+            align-items: flex-end;
+        }
+
+        .message.assistant {
+            align-items: flex-start;
+        }
+
+        .message-content {
+            max-width: 80%;
+            padding: 10px 14px;
+            border-radius: 12px;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .message.assistant .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+        }
+
+        .message.assistant.loading .message-content {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 64px;
+            min-height: 40px;
+        }
+
+        .typing-dots {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .typing-dots span {
+            width: 7px;
+            height: 7px;
+            border-radius: 999px;
+            background: #98a2b3;
+            animation: typing-bounce 1s ease-in-out infinite;
+        }
+
+        .typing-dots span:nth-child(2) {
+            animation-delay: 0.15s;
+        }
+
+        .typing-dots span:nth-child(3) {
+            animation-delay: 0.3s;
+        }
+
+        @keyframes typing-bounce {
+            0%, 80%, 100% {
+                transform: translateY(0);
+                opacity: 0.45;
+            }
+            40% {
+                transform: translateY(-4px);
+                opacity: 1;
+            }
+        }
+
+        .chat-input-area {
+            padding: 12px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 8px;
+        }
+
+        #chat-input {
+            flex: 1;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 10px 14px;
+            font-size: 14px;
+            outline: none;
+            resize: none;
+        }
+
+        #chat-input:focus {
+            border-color: #667eea;
+        }
+
+        #send-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 10px 20px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        #send-btn:hover {
+            opacity: 0.9;
+        }
+
+        /* 右键菜单 */
+        #context-menu {
+            position: fixed;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            padding: 8px 0;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.15);
+            display: none;
+            z-index: 2000;
+            min-width: 160px;
+        }
+
+        #context-menu.visible {
+            display: block;
+        }
+
+        #context-menu button {
+            width: 100%;
+            padding: 10px 16px;
+            border: none;
+            background: none;
+            text-align: left;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        #context-menu button:hover {
+            background: #f0f0f0;
+        }
+
+        #context-menu .separator {
+            height: 1px;
+            background: #e0e0e0;
+            margin: 6px 0;
+        }
+
+        #model-panel {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            width: 360px;
+            max-height: calc(100vh - 40px);
+            background: rgba(255,255,255,0.96);
+            border-radius: 16px;
+            box-shadow: 0 10px 32px rgba(0,0,0,0.18);
+            backdrop-filter: blur(12px);
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            z-index: 1150;
+        }
+
+        #model-panel.visible {
+            display: flex;
+        }
+
+        #builtin-model-list {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .model-card {
+            display: grid;
+            gap: 10px;
+            padding: 10px;
+            background: #f8faff;
+            border: 1px solid #e6ebff;
+            border-radius: 14px;
+        }
+
+        .model-thumb {
+            position: relative;
+            aspect-ratio: 9 / 16;
+            border-radius: 12px;
+            overflow: hidden;
+            background: linear-gradient(180deg, #eef2ff 0%, #dbe4ff 100%);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 10px;
+        }
+
+        .model-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            object-position: center center;
+            display: block;
+        }
+
+        .model-thumb-placeholder {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            padding: 16px;
+            text-align: center;
+            color: #52607a;
+            background: linear-gradient(180deg, #eef2ff 0%, #dbe4ff 100%);
+        }
+
+        .model-thumb-placeholder strong {
+            font-size: 15px;
+            line-height: 1.3;
+        }
+
+        .model-thumb-placeholder span {
+            font-size: 12px;
+            line-height: 1.4;
+            color: #667085;
+        }
+
+        .model-meta {
+            display: grid;
+            gap: 4px;
+        }
+
+        .model-name {
+            font-weight: 600;
+            color: #1d2939;
+        }
+
+        .model-detail {
+            font-size: 12px;
+            color: #667085;
+        }
+
+        .model-card button {
+            border: none;
+            border-radius: 10px;
+            background: #e9edff;
+            color: #4452b8;
+            padding: 8px 10px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
+        .proactive-test-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .proactive-test-grid button {
+            border: none;
+            border-radius: 10px;
+            background: #eef2ff;
+            color: #4452b8;
+            padding: 10px 12px;
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 12px;
+        }
+
+        .model-card button:disabled {
+            cursor: default;
+            background: #eef2f6;
+            color: #98a2b3;
+        }
+
+        .memory-group {
+            display: grid;
+            gap: 8px;
+            margin-bottom: 12px;
+        }
+
+        .memory-group-title {
+            font-size: 12px;
+            font-weight: 700;
+            color: #475467;
+            letter-spacing: 0.4px;
+        }
+    </style>
+</head>
+<body data-companion-state="idle">
+    <div id="app">
+        <div id="bootstrap-error-banner" role="alert"></div>
+
+        <div id="first-run-panel">
+            <div class="first-run-card">
+                <h2>创建你的伙伴</h2>
+                <p>先创建一个默认伙伴，桌面陪伴体验就会开始。</p>
+
+                <label for="creator-character-select">选择形象</label>
+                <select id="creator-character-select">
+                    <option value="hiyori_pro_zh">Hiyori</option>
+                    <option value="natori_pro_zh">Natori</option>
+                    <option value="mao_pro_zh">Mao</option>
+                    <option value="kei">Kei</option>
+                </select>
+
+                <label for="creator-name-input">伙伴名字</label>
+                <input id="creator-name-input" type="text" value="小艾" maxlength="20">
+
+                <label for="creator-personality-select">性格（可多选）</label>
+                <select id="creator-personality-select" multiple>
+                    <option value="温柔" selected>温柔</option>
+                    <option value="安静">安静</option>
+                    <option value="元气">元气</option>
+                    <option value="理性">理性</option>
+                    <option value="治愈">治愈</option>
+                </select>
+
+                <label for="creator-mode-select">陪伴模式</label>
+                <select id="creator-mode-select">
+                    <option value="work">工作搭子</option>
+                    <option value="daily">日常陪伴</option>
+                    <option value="quiet">少打扰助手</option>
+                    <option value="sleep">睡前聊天伙伴</option>
+                </select>
+
+                <button id="creator-submit-btn" type="button">完成创建</button>
+            </div>
+        </div>
+
+        <!-- Live2D 角色容器 -->
+        <div id="character-container">
+            <div id="character-hit-area"></div>
+            <div id="action-indicator"></div>
+            <div id="reaction-bubble">
+                <div id="reaction-bubble-text"></div>
+            </div>
+            <div id="character-stage">
+                <div id="character-canvas"></div>
+            </div>
+        </div>
+
+        <!-- 聊天窗口 -->
+        <div id="chat-window">
+            <div class="chat-header">
+                <div class="chat-header-main">
+                    <h3 id="chat-title">小艾 AI</h3>
+                    <div id="chat-status">
+                        <span id="chat-status-dot"></span>
+                        <span id="chat-status-text">想一下</span>
+                    </div>
+                </div>
+                <button class="close-btn">×</button>
+            </div>
+            <div class="chat-messages" id="chat-messages"></div>
+            <div class="chat-input-area">
+                <textarea id="chat-input" placeholder="输入消息... (Shift+Enter 换行)" rows="2"></textarea>
+                <button id="send-btn">发送</button>
+            </div>
+        </div>
+
+        <div id="settings-panel">
+            <div class="settings-header">
+                <h3>设置</h3>
+                <button class="settings-close-btn">×</button>
+            </div>
+            <div class="settings-body">
+                <div class="settings-item">
+                    <strong>陪伴设定</strong>
+                    当前模型：<span id="current-character-label">Kei</span>
+                    <div id="active-companion-summary">当前伙伴：小艾 · Hiyori · 工作搭子</div>
+                    <button id="create-companion-btn" type="button">创建新伙伴</button>
+                    <div id="companion-list"></div>
+                    <div id="companion-limit-note">普通用户最多创建 1 个伙伴，更多伙伴为 VIP 功能。</div>
+
+                    <label for="character-name-input">虚拟人名字</label>
+                    <input id="character-name-input" type="text" value="小艾" maxlength="20">
+
+                    <label for="user-display-name-input">虚拟人如何称呼你</label>
+                    <input id="user-display-name-input" type="text" value="你" maxlength="20">
+
+                    <label for="chat-model-select">对话模型</label>
+                    <select id="chat-model-select">
+                        <option value="gpt">GPT</option>
+                        <option value="deepseek">DeepSeek</option>
+                    </select>
+
+                    <label for="personality-select">性格（可多选）</label>
+                    <select id="personality-select" multiple>
+                        <option value="温柔">温柔</option>
+                        <option value="安静">安静</option>
+                        <option value="元气">元气</option>
+                        <option value="理性">理性</option>
+                        <option value="治愈">治愈</option>
+                    </select>
+
+                    <label for="interaction-mode-select">你希望它更像什么？</label>
+                    <select id="interaction-mode-select">
+                        <option value="work">工作搭子</option>
+                        <option value="daily">日常陪伴</option>
+                        <option value="quiet">少打扰助手</option>
+                        <option value="sleep">睡前聊天伙伴</option>
+                    </select>
+
+                    <label for="proactive-mode-select">你希望它平时主动吗？</label>
+                    <select id="proactive-mode-select">
+                        <option value="quiet">尽量安静，只有我叫它时再回应</option>
+                        <option value="greet">偶尔打个招呼</option>
+                        <option value="remind">可以主动提醒我休息/睡觉</option>
+                    </select>
+                </div>
+                <div class="settings-item">
+                    <strong>缩放</strong>
+                    <div class="settings-scale-row">
+                        <input id="scale-slider" type="range" min="0.01" max="1.4" step="0.01" value="1">
+                        <span id="scale-value">100%</span>
+                    </div>
+                    <div class="settings-actions">
+                        <button id="scale-decrease-btn">缩小</button>
+                        <button id="scale-reset-btn">重置</button>
+                        <button id="scale-increase-btn">放大</button>
+                    </div>
+                </div>
+                <div class="settings-item">
+                    <strong>显示</strong>
+                    默认会自动完整展示角色，你可以按需要再放大或缩小。
+                </div>
+                <div class="settings-item">
+                    <strong>她记住的内容</strong>
+                    <div id="memory-list"></div>
+                </div>
+                <div class="settings-item">
+                    <strong>本地存储位置</strong>
+                    聊天记录、配置、导入模型等会保存到这里。
+                    <label for="data-dir-input">数据目录</label>
+                    <input id="data-dir-input" type="text" placeholder="例如：D:\\DesktopAICompanionData">
+                    <div class="settings-actions">
+                        <button id="choose-data-dir-btn" type="button">选择目录</button>
+                        <button id="save-data-dir-btn" type="button">保存存储位置</button>
+                    </div>
+                </div>
+                <div class="settings-item">
+                    <strong>测试主动提醒</strong>
+                    点一下直接预览主动气泡效果。
+                    <div class="proactive-test-grid">
+                        <button id="test-morning-btn" type="button">测试早安</button>
+                        <button id="test-weather-btn" type="button">测试天气</button>
+                        <button id="test-meal-btn" type="button">测试饭点</button>
+                        <button id="test-rest-btn" type="button">测试久坐</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="model-panel">
+            <div class="settings-header">
+                <h3>选择模型</h3>
+                <button class="model-close-btn">×</button>
+            </div>
+            <div class="settings-body">
+                <div class="settings-item">
+                    <strong>当前模型</strong>
+                    <div id="active-model-summary"></div>
+                </div>
+                <div class="settings-item">
+                    <strong>可用模型</strong>
+                    <div id="builtin-model-list"></div>
+                </div>
+                <div class="settings-item">
+                    <strong>下载使用</strong>
+                    <div id="catalog-model-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右键菜单 -->
+        <div id="context-menu">
+            <button data-action="model-picker">🗂 选择模型</button>
+            <div class="separator"></div>
+            <button data-action="hide">🙈 隐藏</button>
+            <button data-action="settings">⚙️ 设置</button>
+            <div class="separator"></div>
+            <button data-action="quit">❌ 退出</button>
+        </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
