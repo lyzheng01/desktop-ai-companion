@@ -89,7 +89,8 @@ let currentWindowLabel = 'main';
 const FREE_COMPANION_LIMIT = 1;
 const BASE_WINDOW_WIDTH = 400;
 const BASE_WINDOW_HEIGHT = 600;
-let backendBaseUrl = 'http://localhost:8080';
+const DEFAULT_BACKEND_URL = 'http://119.91.32.174:8080';
+let backendBaseUrl = DEFAULT_BACKEND_URL;
 const chatClient = new ChatClient({
     apiEndpoint: `${backendBaseUrl}/chat`,
 });
@@ -101,7 +102,7 @@ async function resolveBackendBaseUrl() {
             backendBaseUrl = resolved.trim();
         }
     } catch {
-        backendBaseUrl = 'http://localhost:8080';
+        backendBaseUrl = DEFAULT_BACKEND_URL;
     }
 }
 
@@ -123,10 +124,6 @@ const live2dModels: Record<string, string> = {
     hiyori: '/live2d/hiyori/hiyori_pro_jp.model3.json',
     shizuku: '/live2d/shizuku/runtime/shizuku.model3.json',
     hiyori_pro_zh: '/live2d/hiyori_pro_zh/runtime/hiyori_pro_t11.model3.json',
-    mao_pro_zh: '/live2d/mao_pro_zh/runtime/mao_pro.model3.json',
-    miara_pro_en: '/live2d/miara_pro_en/runtime/miara_pro_t03.model3.json',
-    miku_pro_jp: '/live2d/miku_pro_jp/runtime/miku_sample_t04.model3.json',
-    natori_pro_zh: '/live2d/natori_pro_zh/runtime/natori_pro_t06.model3.json',
 };
 const modelDisplayNames: Record<string, string> = {
     kei: 'Kei',
@@ -134,10 +131,6 @@ const modelDisplayNames: Record<string, string> = {
     hiyori: 'Hiyori JP',
     shizuku: 'Shizuku',
     hiyori_pro_zh: 'Hiyori',
-    mao_pro_zh: 'Mao',
-    miara_pro_en: 'Miara',
-    miku_pro_jp: 'Miku',
-    natori_pro_zh: 'Natori',
 };
 const importedModelKeys = new Set<string>();
 let currentCharacter = 'hiyori_pro_zh';
@@ -157,6 +150,20 @@ const characterBehaviors: Record<string, CharacterBehavior> = {
         supportsRandomExpression: true,
     },
     hiyori: {
+        idleGroups: ['Idle'],
+        tapGroups: ['Tap', 'Tap@Body'],
+        greetGroups: ['Flick', 'Flick@Body'],
+        talkGroups: ['Idle', 'FlickUp', 'FlickDown'],
+        supportsRandomExpression: false,
+    },
+    shizuku: {
+        idleGroups: ['idle'],
+        tapGroups: ['tap'],
+        greetGroups: ['greet'],
+        talkGroups: ['idle'],
+        supportsRandomExpression: true,
+    },
+    hiyori_pro_zh: {
         idleGroups: ['Idle'],
         tapGroups: ['Tap', 'Tap@Body'],
         greetGroups: ['Flick', 'Flick@Body'],
@@ -557,9 +564,19 @@ function getImportedModelKey(model: ImportedModelItem) {
 function getGeneratedPreviewPath(modelKey: string) {
     if (modelKey.startsWith('imported:')) {
         const importedId = modelKey.split(':')[1] || 'unknown';
-        return `/model-previews/imported/${importedId}.png?v=${modelPreviewVersion}`;
+        return `${backendBaseUrl}/model-previews/imported/${importedId}.png?v=${modelPreviewVersion}`;
     }
     return `/model-previews/builtin/${modelKey}.png?v=${modelPreviewVersion}`;
+}
+
+function resolveModelAssetPath(path: string) {
+    if (/^https?:\/\//i.test(path)) {
+        return path;
+    }
+    if (path.startsWith('/live2d/imported/') || path.startsWith('/model-previews/imported/')) {
+        return `${backendBaseUrl}${path}`;
+    }
+    return path;
 }
 
 function getModelPreviewCandidates(modelPath: string) {
@@ -570,12 +587,12 @@ function getModelPreviewCandidates(modelPath: string) {
     const stem = file.replace(/\.model3\.json$/i, '');
 
     const candidates = [
-        `${dir}/icon.png`,
-        `${dir}/icon.jpg`,
-        `${dir}/preview.png`,
-        `${dir}/preview.jpg`,
-        `${dir}/${stem}.png`,
-        `${dir}/${stem}.jpg`,
+        resolveModelAssetPath(`${dir}/icon.png`),
+        resolveModelAssetPath(`${dir}/icon.jpg`),
+        resolveModelAssetPath(`${dir}/preview.png`),
+        resolveModelAssetPath(`${dir}/preview.jpg`),
+        resolveModelAssetPath(`${dir}/${stem}.png`),
+        resolveModelAssetPath(`${dir}/${stem}.jpg`),
     ];
 
     return candidates.filter((candidate, index) => candidates.indexOf(candidate) === index);
@@ -638,6 +655,17 @@ function buildModelCard(name: string, detailText: string, modelKey: string, mode
     card.appendChild(thumb);
     card.appendChild(meta);
     card.appendChild(button);
+    return card;
+}
+
+function buildCatalogModelCard(name: string, previewPath: string, modelKey: string, installed: boolean, onInstall: () => void) {
+    const card = buildModelCard(name, installed ? '已下载' : '点击下载后使用', modelKey, previewPath);
+    const button = card.querySelector('button');
+    if (button) {
+        button.textContent = installed ? '已安装' : '下载使用';
+        button.disabled = installed;
+        button.addEventListener('click', onInstall);
+    }
     return card;
 }
 
@@ -2168,7 +2196,7 @@ async function enterDesktopFlow() {
 }
 
 async function loadLive2DModel() {
-    const modelPath = live2dModels[currentCharacter] ?? live2dModels.kei;
+    const modelPath = resolveModelAssetPath(live2dModels[currentCharacter] ?? live2dModels.kei);
 
     try {
         clearActionTimers();
@@ -2671,6 +2699,27 @@ function renderBuiltInModelList(importedModels: ImportedModelItem[] = []) {
     });
 }
 
+async function renderCatalogModelList() {
+    const list = document.getElementById('catalog-model-list');
+    if (!list) return;
+    const catalog = await chatClient.loadCatalogModels();
+    list.innerHTML = '';
+    catalog.forEach((model) => {
+        list.appendChild(
+            buildCatalogModelCard(
+                model.name,
+                model.preview_path,
+                model.key,
+                model.installed,
+                async () => {
+                    await chatClient.installCatalogModel(model.key);
+                    await refreshModelPanel();
+                },
+            ),
+        );
+    });
+}
+
 async function refreshModelPanel() {
     modelPreviewVersion = Date.now().toString();
     const imported = await chatClient.loadImportedModels();
@@ -2682,6 +2731,7 @@ async function refreshModelPanel() {
     }
 
     renderBuiltInModelList(imported);
+    await renderCatalogModelList();
 }
 
 function openModelPanel() {

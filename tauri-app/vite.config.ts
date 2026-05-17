@@ -4,7 +4,7 @@ import { defineConfig } from 'vite';
 export default defineConfig({
   plugins: [],
   clearScreen: false,
-  publicDir: path.resolve(__dirname, '../assets'),
+  publicDir: path.resolve(__dirname, '../assets/public'),
   server: {
     port: 1420,
     strictPort: true,

@@ -21,6 +21,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from typing import List
 import uvicorn
@@ -31,6 +32,7 @@ from app.config import (
     get_config,
     get_data_dir,
     get_imported_models_dir,
+    get_imported_preview_dir,
     save_config as persist_config,
     set_data_dir,
 )
@@ -49,6 +51,91 @@ from app.db import (
     set_active_companion,
     update_companion,
 )
+
+MODEL_CATALOG = [
+    {
+        "key": "kei",
+        "name": "Kei",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "kei_en" / "kei_basic_free",
+        "preview_path": "/model-previews/builtin/kei.png",
+        "builtin": True,
+    },
+    {
+        "key": "chitose",
+        "name": "Chitose",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "chitose",
+        "preview_path": "/model-previews/builtin/chitose.png",
+        "builtin": True,
+    },
+    {
+        "key": "hiyori",
+        "name": "Hiyori",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "hiyori",
+        "preview_path": "/model-previews/builtin/hiyori.png",
+        "builtin": True,
+    },
+    {
+        "key": "shizuku",
+        "name": "Shizuku",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "shizuku",
+        "preview_path": "/model-previews/builtin/shizuku.png",
+        "builtin": True,
+    },
+    {
+        "key": "hiyori_pro_zh",
+        "name": "Hiyori CN",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "hiyori_pro_zh" / "runtime",
+        "preview_path": "/model-previews/builtin/hiyori_pro_zh.png",
+        "builtin": True,
+    },
+    {
+        "key": "mao_pro_zh",
+        "name": "Mao",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "mao_pro_zh" / "runtime",
+        "preview_path": "/model-previews/builtin/mao_pro_zh.png",
+        "builtin": False,
+    },
+    {
+        "key": "miara_pro_en",
+        "name": "Miara",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "miara_pro_en" / "runtime",
+        "preview_path": "/model-previews/builtin/miara_pro_en.png",
+        "builtin": False,
+    },
+    {
+        "key": "miku_pro_jp",
+        "name": "Miku",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "miku_pro_jp" / "runtime",
+        "preview_path": "/model-previews/builtin/miku_pro_jp.png",
+        "builtin": False,
+    },
+    {
+        "key": "natori_pro_zh",
+        "name": "Natori",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "natori_pro_zh" / "runtime",
+        "preview_path": "/model-previews/builtin/natori_pro_zh.png",
+        "builtin": False,
+    },
+]
+
+BUILTIN_MODEL_KEYS = {item["key"] for item in MODEL_CATALOG if item["builtin"]}
+
+def get_model_catalog_item(model_key: str) -> dict | None:
+    for item in MODEL_CATALOG:
+        if item["key"] == model_key:
+            return item
+    return None
+
+def model_to_response(item: dict) -> dict:
+    return {
+        "key": item["key"],
+        "name": item["name"],
+        "preview_path": item["preview_path"],
+        "builtin": item["builtin"],
+        "installed": item["key"] in BUILTIN_MODEL_KEYS or any(
+            model["model_path"].endswith(f"/{item['key']}.model3.json") for model in list_imported_models()
+        ),
+    }
 
 # ============== 数据模型 ==============
 
@@ -108,6 +195,10 @@ class CompanionCreateRequest(BaseModel):
 class ImportedModelRequest(BaseModel):
     model_path: str
     name: str
+
+
+class CatalogModelInstallRequest(BaseModel):
+    model_key: str
 
 class Config(BaseModel):
     user_nickname: str = "小伙伴"
@@ -859,6 +950,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+BUILTIN_LIVE2D_DIR = PROJECT_ROOT / "assets" / "public" / "live2d"
+BUILTIN_PREVIEW_DIR = PROJECT_ROOT / "assets" / "public" / "model-previews" / "builtin"
+
+app.mount("/live2d/imported", StaticFiles(directory=get_imported_models_dir()), name="imported-live2d")
+app.mount("/model-previews/imported", StaticFiles(directory=get_imported_preview_dir()), name="imported-previews")
+app.mount("/live2d", StaticFiles(directory=BUILTIN_LIVE2D_DIR), name="builtin-live2d")
+app.mount("/model-previews/builtin", StaticFiles(directory=BUILTIN_PREVIEW_DIR), name="builtin-previews")
+
 # ============== API 端点 ==============
 
 @app.get("/health")
@@ -1019,6 +1118,44 @@ async def activate_companion(companion_id: int):
 @app.get("/models/imported")
 async def get_imported_models_endpoint():
     return list_imported_models()
+
+
+@app.get("/models/catalog")
+async def get_model_catalog_endpoint():
+    return [model_to_response(item) for item in MODEL_CATALOG if not item["builtin"]]
+
+
+def _resolve_model_manifest(source_dir: Path) -> Path:
+    candidates = sorted(source_dir.glob("**/*.model3.json"))
+    if not candidates:
+        raise HTTPException(status_code=404, detail="Model manifest not found")
+    return candidates[0]
+
+
+def _install_catalog_model(item: dict) -> dict:
+    source_dir = item["source_dir"]
+    if not source_dir.exists():
+        raise HTTPException(status_code=404, detail="Source model directory not found")
+
+    source_manifest = _resolve_model_manifest(source_dir)
+    slug = item["key"]
+    target_root = get_imported_models_dir() / slug
+    if target_root.exists():
+        shutil.rmtree(target_root)
+    shutil.copytree(source_dir, target_root)
+
+    relative_manifest = source_manifest.relative_to(source_dir)
+    public_model_path = f"/live2d/imported/{slug}/{relative_manifest.as_posix()}"
+    model_id = create_imported_model(item["name"], public_model_path, source="catalog")
+    return {"status": "ok", "id": model_id, "model_path": public_model_path, "key": item["key"]}
+
+
+@app.post("/models/catalog/install")
+async def install_catalog_model_endpoint(payload: CatalogModelInstallRequest):
+    item = get_model_catalog_item(payload.model_key)
+    if item is None or item["builtin"]:
+        raise HTTPException(status_code=404, detail="Catalog model not found")
+    return _install_catalog_model(item)
 
 
 @app.post("/models/imported")

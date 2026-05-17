@@ -12,8 +12,9 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const CHAT_WINDOW_LABEL: &str = "chat";
 const SETTINGS_WINDOW_LABEL: &str = "settings";
 const MODEL_WINDOW_LABEL: &str = "model";
-const BACKEND_HOST: &str = "127.0.0.1";
+const BACKEND_HOST: &str = "0.0.0.0";
 const BACKEND_PORT: u16 = 8080;
+const BACKEND_PUBLIC_URL: &str = "http://119.91.32.174:8080";
 
 fn show_main_window_inner(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -90,7 +91,7 @@ fn quit_app(app: AppHandle) {
 
 #[tauri::command]
 fn get_backend_base_url() -> String {
-    format!("http://{}:{}", BACKEND_HOST, BACKEND_PORT)
+    std::env::var("DESKTOP_AI_COMPANION_BACKEND_URL").unwrap_or_else(|_| BACKEND_PUBLIC_URL.to_string())
 }
 
 fn is_backend_running() -> bool {
@@ -122,7 +123,12 @@ fn bundled_backend_command(app: &AppHandle) -> Result<Command, String> {
         .path()
         .resource_dir()
         .map_err(|err| format!("failed to resolve resource dir: {err}"))?;
-    let executable = resource_dir.join("backend-service.exe");
+    let executable_name = if cfg!(target_os = "windows") {
+        "backend-service.exe"
+    } else {
+        "backend-service"
+    };
+    let executable = resource_dir.join(executable_name);
     if !executable.exists() {
         return Err(format!("bundled backend not found: {}", executable.display()));
     }
@@ -134,6 +140,10 @@ fn bundled_backend_command(app: &AppHandle) -> Result<Command, String> {
 
 fn start_backend(app: &AppHandle) -> Result<Option<Child>, String> {
     if is_backend_running() {
+        return Ok(None);
+    }
+
+    if !cfg!(debug_assertions) && !cfg!(target_os = "windows") {
         return Ok(None);
     }
 

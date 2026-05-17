@@ -40,6 +40,14 @@ export interface ImportedModelItem {
     is_active: boolean;
 }
 
+export interface CatalogModelItem {
+    key: string;
+    name: string;
+    preview_path: string;
+    builtin: boolean;
+    installed: boolean;
+}
+
 export interface DataDirInfo {
     data_dir: string;
 }
@@ -283,6 +291,14 @@ export class ChatClient {
         return await response.json() as ImportedModelItem[];
     }
 
+    public async loadCatalogModels(): Promise<CatalogModelItem[]> {
+        const response = await fetch(this.getEndpointUrl('models-catalog'));
+        if (!response.ok) {
+            throw new Error(`Catalog models request failed: ${response.status}`);
+        }
+        return await response.json() as CatalogModelItem[];
+    }
+
     public async importModel(payload: { name: string; model_path: string }): Promise<void> {
         const response = await fetch(this.getEndpointUrl('models-imported'), {
             method: 'POST',
@@ -291,6 +307,17 @@ export class ChatClient {
         });
         if (!response.ok) {
             throw await this.buildApiRequestError('Import model failed', response);
+        }
+    }
+
+    public async installCatalogModel(modelKey: string): Promise<void> {
+        const response = await fetch(this.getEndpointUrl('models-catalog-install'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ model_key: modelKey }),
+        });
+        if (!response.ok) {
+            throw await this.buildApiRequestError('Install catalog model failed', response);
         }
     }
 
@@ -365,8 +392,8 @@ export class ChatClient {
         return responses[Math.floor(Math.random() * responses.length)];
     }
 
-    private getEndpointUrl(kind: 'chat' | 'chat-stream' | 'history' | 'memory' | 'companions' | 'companions-active' | 'models-imported' | 'data-dir'): string {
-        const endpoint = new URL(this.config.apiEndpoint || 'http://localhost:8080/chat');
+    private getEndpointUrl(kind: 'chat' | 'chat-stream' | 'history' | 'memory' | 'companions' | 'companions-active' | 'models-imported' | 'models-catalog' | 'models-catalog-install' | 'data-dir'): string {
+        const endpoint = new URL(this.config.apiEndpoint || 'http://119.91.32.174:8080/chat');
         const pathSegments = endpoint.pathname.split('/').filter(Boolean);
 
         const targetPath = {
@@ -377,6 +404,8 @@ export class ChatClient {
             companions: 'companions',
             'companions-active': 'companions/active',
             'models-imported': 'models/imported',
+            'models-catalog': 'models/catalog',
+            'models-catalog-install': 'models/catalog/install',
             'data-dir': 'data-dir',
         }[kind];
 
