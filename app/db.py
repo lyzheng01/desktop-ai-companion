@@ -11,6 +11,12 @@ from . import config as config_module
 
 
 DB_PATH = config_module.DB_PATH
+APP_IMPORTED_MODELS_DIR = config_module.APP_DIR / "assets" / "live2d" / "imported"
+REMOVED_IMPORTED_MODEL_PATHS = {
+    "/live2d/imported/gantzert-felixander---gantzert-felixander-model3---1/Gantzert_Felixander.model3.json",
+    "/live2d/imported/rice-pro-en---rice-pro-t03-model3---1/rice_pro_t03.model3.json",
+    "/live2d/imported/xmas---tonakai-model3---1/tonakai.model3.json",
+}
 
 
 def get_connection() -> sqlite3.Connection:
@@ -426,8 +432,59 @@ def create_imported_model(name: str, model_path: str, source: str = "imported") 
     return model_id
 
 
+def _scan_imported_model_files() -> list[dict[str, str]]:
+    roots = [APP_IMPORTED_MODELS_DIR]
+    data_imported_root = config_module.get_imported_models_dir()
+    if data_imported_root != APP_IMPORTED_MODELS_DIR:
+        roots.append(data_imported_root)
+
+    discovered: list[dict[str, str]] = []
+    seen_paths: set[str] = set()
+    for root in roots:
+        if not root.exists():
+            continue
+        for model_file in sorted(root.glob("**/*.model3.json")):
+            if root == APP_IMPORTED_MODELS_DIR:
+                public_path = f"/live2d/imported/{model_file.relative_to(root).as_posix()}"
+            else:
+                public_path = f"/live2d/imported/{model_file.relative_to(root).as_posix()}"
+            if public_path in REMOVED_IMPORTED_MODEL_PATHS or public_path in seen_paths:
+                continue
+            seen_paths.add(public_path)
+            discovered.append(
+                {
+                    "name": model_file.parent.name,
+                    "model_path": public_path,
+                }
+            )
+    return discovered
+
+
+def ensure_imported_model_records() -> None:
+    discovered = _scan_imported_model_files()
+    if not discovered:
+        return
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT model_path FROM imported_models")
+    existing_paths = {row[0] for row in cursor.fetchall()}
+
+    for item in discovered:
+        if item["model_path"] in existing_paths:
+            continue
+        cursor.execute(
+            "INSERT INTO imported_models (name, model_path, source, is_active) VALUES (?, ?, 'imported', 0)",
+            (item["name"], item["model_path"]),
+        )
+
+    conn.commit()
+    conn.close()
+
+
 def list_imported_models() -> List[Dict]:
     """列出导入模型"""
+    ensure_imported_model_records()
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
