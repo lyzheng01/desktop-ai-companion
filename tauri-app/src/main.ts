@@ -653,8 +653,7 @@ function buildModelCard(name: string, detailText: string, modelKey: string, mode
     button.disabled = modelKey === currentCharacter;
     button.addEventListener('click', () => {
         closeModelPanel();
-        switchCharacter(modelKey);
-        void refreshModelPanel();
+        void requestCharacterSwitch(modelKey);
     });
 
     meta.appendChild(title);
@@ -2893,6 +2892,17 @@ function openModelPanel() {
     void refreshModelPanel();
 }
 
+async function requestCharacterSwitch(modelKey: string) {
+    if (isModelStandaloneWindow()) {
+        await getCurrentWebviewWindow().emitTo('main', 'model-switch-requested', { modelKey });
+        await invoke('hide_model_window');
+        return;
+    }
+
+    switchCharacter(modelKey);
+    void refreshModelPanel();
+}
+
 function closeModelPanel() {
     if (isModelStandaloneWindow()) {
         void invoke('hide_model_window');
@@ -3254,6 +3264,16 @@ window.addEventListener('DOMContentLoaded', async () => {
     try {
         await refreshModelPanel();
         await determineCompanionBootstrapState();
+        await getCurrentWebviewWindow().listen<{ modelKey?: string }>('model-switch-requested', async (event) => {
+            const modelKey = event.payload?.modelKey;
+            if (!modelKey) {
+                return;
+            }
+            switchCharacter(modelKey);
+            await refreshModelPanel();
+            await getCurrentWindow().show();
+            await getCurrentWindow().setFocus();
+        });
         if (firstRunRequired) {
             showFirstRunPanel();
             return;
