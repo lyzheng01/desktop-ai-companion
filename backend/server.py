@@ -1252,7 +1252,7 @@ def _install_catalog_model(item: dict) -> dict:
     shutil.copytree(source_dir, target_root)
 
     public_model_path = f"/live2d/imported/{slug}/{relative_manifest}"
-    model_id = create_imported_model(item["name"], public_model_path, source="catalog")
+    model_id = create_imported_model(item["name"], public_model_path)
     return {"status": "ok", "id": model_id, "model_path": public_model_path, "key": item["key"]}
 
 

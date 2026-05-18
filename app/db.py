@@ -462,11 +462,16 @@ def _scan_imported_model_files() -> list[dict[str, str]]:
 
 def ensure_imported_model_records() -> None:
     discovered = _scan_imported_model_files()
-    if not discovered:
-        return
 
     conn = get_connection()
     cursor = conn.cursor()
+    cursor.execute("UPDATE imported_models SET source = 'imported' WHERE source = 'catalog'")
+
+    if not discovered:
+        conn.commit()
+        conn.close()
+        return
+
     cursor.execute("SELECT model_path FROM imported_models")
     existing_paths = {row[0] for row in cursor.fetchall()}
 

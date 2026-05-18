@@ -574,6 +574,15 @@ function getImportedModelKey(model: ImportedModelItem) {
     return `imported:${model.id}`;
 }
 
+function getInstalledCatalogModelKey(modelPath: string, catalogKeys: Set<string>) {
+    for (const catalogKey of catalogKeys) {
+        if (modelPath.includes(`/imported/${catalogKey}/`)) {
+            return catalogKey;
+        }
+    }
+    return null;
+}
+
 function getGeneratedPreviewPath(modelKey: string) {
     if (modelKey.startsWith('imported:')) {
         const importedId = modelKey.split(':')[1] || 'unknown';
@@ -2946,13 +2955,13 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
     if (!list) return;
     const catalog = await chatClient.loadCatalogModels();
     list.innerHTML = '';
+    const catalogKeys = new Set(catalog.map((model) => model.key));
 
     const catalogInstalledByName = new Map(
         importedModels
-            .filter((model) => model.source === 'catalog')
+            .filter((model) => Boolean(getInstalledCatalogModelKey(model.model_path, catalogKeys)))
             .map((model) => [model.name, model]),
     );
-    const catalogKeys = new Set(catalog.map((model) => model.key));
 
     Object.keys(live2dModels)
         .filter((key) => !importedModelKeys.has(key))
@@ -2969,10 +2978,7 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
 
     catalog.forEach((model) => {
         const installedModel = importedModels.find((item) => {
-            if (item.source !== 'catalog') {
-                return false;
-            }
-            if (item.model_path.includes(`/imported/${model.key}/`)) {
+            if (getInstalledCatalogModelKey(item.model_path, new Set([model.key])) === model.key) {
                 return true;
             }
             return item.name === model.name || item.name === model.key;
@@ -3016,7 +3022,7 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
     });
 
     importedModels.forEach((model) => {
-        if (model.source === 'catalog' && Array.from(catalogKeys).some((catalogKey) => model.model_path.includes(`/imported/${catalogKey}/`))) {
+        if (getInstalledCatalogModelKey(model.model_path, catalogKeys)) {
             return;
         }
         const key = getImportedModelKey(model);
