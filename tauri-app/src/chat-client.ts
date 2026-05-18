@@ -146,61 +146,70 @@ export class ChatClient {
             return this.fallbackFromStreaming(content, onDelta, onState);
         }
 
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        let buffer = '';
-        let currentEvent = '';
-        let finalContent = '';
+        try {
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let currentEvent = '';
+            let finalContent = '';
 
-        const processBlock = (block: string) => {
-            const lines = block.split('\n');
-            let data = '';
+            const processBlock = (block: string) => {
+                const lines = block.split('\n');
+                let data = '';
 
-            for (const rawLine of lines) {
-                const line = rawLine.trimEnd();
-                if (line.startsWith('event:')) {
-                    currentEvent = line.slice(6).trim();
-                } else if (line.startsWith('data:')) {
-                    data += line.slice(5).trimStart();
+                for (const rawLine of lines) {
+                    const line = rawLine.trimEnd();
+                    if (line.startsWith('event:')) {
+                        currentEvent = line.slice(6).trim();
+                    } else if (line.startsWith('data:')) {
+                        data += line.slice(5).trimStart();
+                    }
+                }
+
+                if ((currentEvent === 'state' || currentEvent === 'phase') && onState) {
+                    onState(data);
+                }
+                if (currentEvent === 'assistant_delta') {
+                    finalContent += data;
+                    onDelta(data);
+                }
+            };
+
+            while (true) {
+                const { done, value } = await reader.read();
+                buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+                const blocks = buffer.split('\n\n');
+                buffer = blocks.pop() || '';
+
+                for (const block of blocks) {
+                    processBlock(block);
+                }
+
+                if (done) {
+                    break;
                 }
             }
 
-            if ((currentEvent === 'state' || currentEvent === 'phase') && onState) {
-                onState(data);
-            }
-            if (currentEvent === 'assistant_delta') {
-                finalContent += data;
-                onDelta(data);
-            }
-        };
-
-        while (true) {
-            const { done, value } = await reader.read();
-            buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-
-            const blocks = buffer.split('\n\n');
-            buffer = blocks.pop() || '';
-
-            for (const block of blocks) {
-                processBlock(block);
+            if (buffer.trim()) {
+                processBlock(buffer);
             }
 
-            if (done) {
-                break;
+            if (!finalContent.trim()) {
+                throw new Error('Streaming response completed without assistant content');
             }
+
+            const aiMsg: ChatMessage = {
+                role: 'assistant',
+                content: finalContent,
+                timestamp: new Date().toISOString(),
+            };
+            this.messages.push(aiMsg);
+            return finalContent;
+        } catch (error) {
+            console.warn('Streaming chat failed, falling back to standard chat.', error);
+            return this.fallbackFromStreaming(content, onDelta, onState);
         }
-
-        if (buffer.trim()) {
-            processBlock(buffer);
-        }
-
-        const aiMsg: ChatMessage = {
-            role: 'assistant',
-            content: finalContent,
-            timestamp: new Date().toISOString(),
-        };
-        this.messages.push(aiMsg);
-        return finalContent;
     }
 
     private async fallbackFromStreaming(
