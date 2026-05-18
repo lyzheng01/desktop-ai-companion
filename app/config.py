@@ -114,8 +114,8 @@ class AppConfig:
     user_display_name: str = "你"
 
     # 角色设置
-    character_type: str = "hiyori_pro_zh"  # default live2d model
-    character_name: str = "小艾"
+    character_type: str = "mao_pro_zh"  # default live2d model
+    character_name: str = "Mao"
     personality: list[str] = field(default_factory=lambda: ["温柔"])  # 温柔/安静/元气/理性/治愈
     interaction_mode: str = "work"  # work, daily, quiet, sleep
     proactive_mode: str = "quiet"  # quiet, greet, remind

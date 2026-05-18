@@ -118,26 +118,26 @@ function isModelStandaloneWindow() {
     return currentWindowLabel === 'model';
 }
 const cubismCoreUrl = '/vendor/live2dcubismcore.min.js';
-const PACKAGED_BUILTIN_MODEL_KEYS = new Set(['hiyori_pro_zh', 'kei']);
+const PACKAGED_BUILTIN_MODEL_KEYS = new Set(['mao_pro_zh', 'hiyori_pro_zh']);
 const live2dModels: Record<string, string> = {
-    kei: '/live2d/kei_en/kei_basic_free/runtime/kei_basic_free.model3.json',
+    mao_pro_zh: '/live2d/mao_pro_zh/runtime/mao_pro.model3.json',
     hiyori_pro_zh: '/live2d/hiyori_pro_zh/runtime/hiyori_pro_t11.model3.json',
 };
 const modelDisplayNames: Record<string, string> = {
-    kei: 'Kei',
+    mao_pro_zh: 'Mao',
     chitose: 'Chitose',
     hiyori: 'Hiyori JP',
     shizuku: 'Shizuku',
     hiyori_pro_zh: 'Hiyori',
 };
 const importedModelKeys = new Set<string>();
-let currentCharacter = 'hiyori_pro_zh';
+let currentCharacter = 'mao_pro_zh';
 const characterBehaviors: Record<string, CharacterBehavior> = {
-    kei: {
-        idleGroups: [''],
-        tapGroups: [''],
-        greetGroups: [''],
-        talkGroups: [''],
+    mao_pro_zh: {
+        idleGroups: ['Idle'],
+        tapGroups: ['Tap', 'Tap@Body'],
+        greetGroups: ['Flick', 'Flick@Body'],
+        talkGroups: ['Idle', 'FlickUp', 'FlickDown'],
         supportsRandomExpression: false,
     },
     chitose: {
@@ -203,8 +203,8 @@ const proactiveStorageKey = 'desktop-ai-proactive-state-v1';
 let appSettings: AppSettings = {
     user_nickname: '小伙伴',
     user_display_name: '你',
-    character_type: 'hiyori_pro_zh',
-    character_name: '小艾',
+    character_type: 'mao_pro_zh',
+    character_name: 'Mao',
     personality: ['温柔'],
     interaction_mode: 'work',
     proactive_mode: 'quiet',
@@ -495,8 +495,8 @@ async function loadAppSettings(options: {
         appSettings = {
             user_nickname: data.user_nickname ?? '小伙伴',
             user_display_name: data.user_display_name ?? '你',
-            character_type: data.character_type ?? 'kei',
-            character_name: data.character_name ?? '小艾',
+            character_type: data.character_type ?? 'mao_pro_zh',
+            character_name: data.character_name ?? 'Mao',
             personality: data.personality ?? ['温柔'],
             interaction_mode: data.interaction_mode ?? 'work',
             proactive_mode: data.proactive_mode ?? 'quiet',
@@ -513,7 +513,7 @@ async function loadAppSettings(options: {
             applyActiveCompanion(bootstrapActiveCompanion);
         }
 
-        currentCharacter = live2dModels[appSettings.character_type] ? appSettings.character_type : 'kei';
+        currentCharacter = live2dModels[appSettings.character_type] ? appSettings.character_type : 'mao_pro_zh';
     } catch (error) {
         console.warn('Failed to load config, using defaults.', error);
     }
@@ -760,7 +760,7 @@ function getInteractionModeLabel(mode: string) {
 }
 
 function getCurrentBehavior() {
-    return characterBehaviors[currentCharacter] ?? characterBehaviors.kei;
+    return characterBehaviors[currentCharacter] ?? characterBehaviors.mao_pro_zh;
 }
 
 function isHiyoriCharacter() {
@@ -806,7 +806,7 @@ function applyActiveCompanion(active: CompanionProfile) {
     appSettings.character_type = active.character_type;
     appSettings.personality = active.personality_tags.length > 0 ? active.personality_tags : ['温柔'];
     appSettings.interaction_mode = active.interaction_mode;
-    currentCharacter = live2dModels[active.character_type] ? active.character_type : 'kei';
+    currentCharacter = live2dModels[active.character_type] ? active.character_type : 'mao_pro_zh';
 }
 
 function isSingleCompanionBootstrapCandidate(companions: CompanionProfile[]) {
@@ -885,8 +885,8 @@ function bindFirstRunCreator() {
         const characterSelect = document.getElementById('creator-character-select') as HTMLSelectElement | null;
         const modeSelect = document.getElementById('creator-mode-select') as HTMLSelectElement | null;
 
-        const name = nameInput?.value.trim() || '小艾';
-        const characterType = characterSelect?.value || 'hiyori_pro_zh';
+        const name = nameInput?.value.trim() || 'Mao';
+        const characterType = characterSelect?.value || 'mao_pro_zh';
         const personalityTags = syncFirstRunPersonalitySelection();
         const interactionMode = modeSelect?.value || 'work';
 
@@ -2264,7 +2264,7 @@ async function enterDesktopFlow() {
 }
 
 async function loadLive2DModel() {
-    const modelPath = resolveModelAssetPath(live2dModels[currentCharacter] ?? live2dModels.kei);
+    const modelPath = resolveModelAssetPath(live2dModels[currentCharacter] ?? live2dModels.mao_pro_zh);
 
     try {
         clearActionTimers();
@@ -2301,9 +2301,9 @@ async function loadLive2DModel() {
         console.log('✅ Live2D 模型加载成功');
     } catch (error) {
         console.error('❌ Live2D 模型加载失败:', error);
-        if (currentCharacter !== 'hiyori_pro_zh') {
+        if (currentCharacter !== 'mao_pro_zh') {
             console.warn('Falling back to packaged default model after load failure.', currentCharacter);
-            currentCharacter = 'hiyori_pro_zh';
+            currentCharacter = 'mao_pro_zh';
             appSettings.character_type = currentCharacter;
             await loadLive2DModel();
             return;
@@ -2980,13 +2980,23 @@ async function initializeStandaloneModelWindow() {
         panel.classList.add('visible');
     }
 
+    await loadAppSettings({ preserveBootstrapCompanion: true });
     await refreshModelPanel();
     await getCurrentWebviewWindow().listen('model-open-requested', async () => {
         const model = document.getElementById('model-panel');
         model?.classList.add('visible');
+        await loadAppSettings({ preserveBootstrapCompanion: true });
         await refreshModelPanel();
         await getCurrentWindow().show();
         await getCurrentWindow().setFocus();
+    });
+    await getCurrentWebviewWindow().listen<{ modelKey?: string }>('model-switched', async (event) => {
+        const modelKey = event.payload?.modelKey;
+        if (modelKey) {
+            currentCharacter = modelKey;
+        }
+        await loadAppSettings({ preserveBootstrapCompanion: true });
+        await refreshModelPanel();
     });
 
     document.addEventListener('pointerdown', (event) => {
@@ -3269,6 +3279,7 @@ window.addEventListener('DOMContentLoaded', async () => {
             }
             switchCharacter(modelKey);
             await refreshModelPanel();
+            await getCurrentWebviewWindow().emitTo('model', 'model-switched', { modelKey });
             await getCurrentWindow().show();
             await getCurrentWindow().setFocus();
         });

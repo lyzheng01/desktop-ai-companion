@@ -58,7 +58,7 @@ MODEL_CATALOG = [
         "name": "Kei",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "kei_en" / "kei_basic_free",
         "preview_path": "/model-previews/builtin/kei.png",
-        "builtin": True,
+        "builtin": False,
     },
     {
         "key": "chitose",
@@ -93,7 +93,7 @@ MODEL_CATALOG = [
         "name": "Mao",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "mao_pro_zh" / "runtime",
         "preview_path": "/model-previews/builtin/mao_pro_zh.png",
-        "builtin": False,
+        "builtin": True,
     },
     {
         "key": "miara_pro_en",
@@ -314,8 +314,8 @@ class CatalogModelInstallRequest(BaseModel):
 class Config(BaseModel):
     user_nickname: str = "小伙伴"
     user_display_name: str = "你"
-    character_type: str = "hiyori_pro_zh"
-    character_name: str = "小艾"
+    character_type: str = "mao_pro_zh"
+    character_name: str = "Mao"
     personality: list[str] = Field(default_factory=lambda: ["温柔"])
     interaction_mode: str = "work"
     proactive_mode: str = "quiet"
