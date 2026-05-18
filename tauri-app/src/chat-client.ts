@@ -12,6 +12,7 @@ export interface ChatMessage {
 export interface ChatConfig {
     apiEndpoint?: string;
     model?: string;
+    memoryContextProvider?: () => ChatMessage[];
 }
 
 export interface MemoryItem {
@@ -73,6 +74,11 @@ export class ChatClient {
         this.config = config;
     }
 
+    private buildRequestContext(): ChatMessage[] {
+        const memoryContext = this.config.memoryContextProvider?.() ?? [];
+        return [...memoryContext, ...this.messages.slice(-10)];
+    }
+
     // 添加消息监听器
     public onMessage(callback: (msg: ChatMessage) => void) {
         this.listeners.add(callback);
@@ -132,7 +138,7 @@ export class ChatClient {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 message: content,
-                context: this.messages.slice(-10),
+                context: this.buildRequestContext(),
             }),
         }).catch(() => null);
 
@@ -352,7 +358,7 @@ export class ChatClient {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     message: userMessage,
-                    context: this.messages.slice(-10), // 最近 10 条消息
+                    context: this.buildRequestContext(),
                 }),
             });
 

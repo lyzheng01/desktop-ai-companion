@@ -9,7 +9,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { ApiRequestError, ChatClient, type ChatMessage, type CompanionProfile, type ImportedModelItem, type MemoryItem } from './chat-client';
+import { ApiRequestError, ChatClient, type ChatMessage, type CompanionProfile, type ImportedModelItem } from './chat-client';
 import { HIYORI_ACTIONS, HIYORI_ACTION_KEYS, type HiyoriAction } from './hiyori-actions';
 
 // ============== 全局状态 ==============
@@ -31,6 +31,19 @@ type AppSettings = {
 
 type DataDirInfo = {
     data_dir: string;
+};
+
+type FrontendMemoryItem = {
+    id: string;
+    content: string;
+    scope: 'preference' | 'short_term' | 'long_term';
+    created_at: string;
+};
+
+type FrontendMemoryCandidate = {
+    content: string;
+    scope: FrontendMemoryItem['scope'];
+    explicit: boolean;
 };
 
 type CharacterBehavior = {
@@ -91,8 +104,10 @@ const BASE_WINDOW_WIDTH = 400;
 const BASE_WINDOW_HEIGHT = 600;
 const DEFAULT_BACKEND_URL = 'http://119.91.32.174:8080';
 let backendBaseUrl = DEFAULT_BACKEND_URL;
+const frontendMemoryStorageKey = 'desktop-ai-companion.frontend-memory.v1';
 const chatClient = new ChatClient({
     apiEndpoint: `${backendBaseUrl}/chat`,
+    memoryContextProvider: () => buildFrontendMemoryContextMessages(),
 });
 
 async function resolveBackendBaseUrl() {
@@ -587,6 +602,141 @@ function resolveModelAssetPath(path: string) {
     return path;
 }
 
+function loadFrontendMemories(): FrontendMemoryItem[] {
+    try {
+        const raw = window.localStorage.getItem(frontendMemoryStorageKey);
+        if (!raw) {
+            return [];
+        }
+        const parsed = JSON.parse(raw) as FrontendMemoryItem[];
+        if (!Array.isArray(parsed)) {
+            return [];
+        }
+        return parsed.filter((item) => item && typeof item.content === 'string' && typeof item.scope === 'string');
+    } catch {
+        return [];
+    }
+}
+
+function saveFrontendMemories(memories: FrontendMemoryItem[]) {
+    window.localStorage.setItem(frontendMemoryStorageKey, JSON.stringify(memories));
+}
+
+function addFrontendMemory(content: string, scope: FrontendMemoryItem['scope']) {
+    const normalized = content.trim();
+    if (!normalized) {
+        return;
+    }
+    const memories = loadFrontendMemories();
+    if (memories.some((item) => item.content === normalized && item.scope === scope)) {
+        return;
+    }
+    memories.unshift({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        content: normalized,
+        scope,
+        created_at: new Date().toISOString(),
+    });
+    saveFrontendMemories(memories.slice(0, 30));
+}
+
+function deleteFrontendMemory(memoryId: string) {
+    const memories = loadFrontendMemories().filter((item) => item.id !== memoryId);
+    saveFrontendMemories(memories);
+}
+
+function extractFrontendMemoryCandidates(message: string): FrontendMemoryCandidate[] {
+    const normalized = message.trim();
+    const candidates: FrontendMemoryCandidate[] = [];
+
+    const explicitRememberMatch = normalized.match(/(?:记住|记一下|帮我记住|你要记得|以后别忘了|请记得)(.+)$/);
+    if (explicitRememberMatch?.[1]) {
+        candidates.push({ content: explicitRememberMatch[1].trim(), scope: 'long_term', explicit: true });
+    }
+
+    if (normalized.includes('叫我')) {
+        candidates.push({ content: normalized, scope: 'preference', explicit: false });
+    }
+
+    if (normalized.includes('我喜欢') || normalized.includes('我不喜欢')) {
+        candidates.push({ content: normalized, scope: 'preference', explicit: false });
+    }
+
+    if (normalized.includes('最近在做') || normalized.includes('最近在准备') || normalized.includes('这周在做')) {
+        candidates.push({ content: normalized, scope: 'short_term', explicit: false });
+    }
+
+    return candidates;
+}
+
+function persistFrontendMemoryCandidates(message: string) {
+    const candidates = extractFrontendMemoryCandidates(message);
+    candidates.forEach((item) => {
+        addFrontendMemory(item.content, item.scope);
+    });
+    return candidates;
+}
+
+function buildMemoryAcknowledgement(candidates: FrontendMemoryCandidate[]) {
+    const explicitCandidates = candidates.filter((item) => item.explicit);
+    if (explicitCandidates.length === 0) {
+        return null;
+    }
+
+    if (explicitCandidates.length === 1) {
+        return `我记住了：${explicitCandidates[0].content}`;
+    }
+
+    return `我记住了这几件事：${explicitCandidates.map((item) => item.content).join('；')}`;
+}
+
+function buildFrontendMemorySummary() {
+    const stored = loadFrontendMemories();
+    const derived: FrontendMemoryItem[] = [
+        {
+            id: 'derived-user-name',
+            content: `用户希望被称呼为${appSettings.user_display_name || '你'}`,
+            scope: 'preference',
+            created_at: new Date(0).toISOString(),
+        },
+        {
+            id: 'derived-interaction-mode',
+            content: `当前陪伴模式是${getInteractionModeLabel(appSettings.interaction_mode)}`,
+            scope: 'preference',
+            created_at: new Date(0).toISOString(),
+        },
+        {
+            id: 'derived-proactive-mode',
+            content: `当前主动模式是${appSettings.proactive_mode === 'quiet' ? '尽量安静' : appSettings.proactive_mode === 'greet' ? '偶尔打招呼' : '可以主动提醒'}`,
+            scope: 'preference',
+            created_at: new Date(0).toISOString(),
+        },
+    ];
+
+    return [...derived, ...stored].slice(0, 12);
+}
+
+function buildFrontendMemoryContextMessages(): ChatMessage[] {
+    const memories = buildFrontendMemorySummary();
+    if (memories.length === 0) {
+        return [];
+    }
+    const lines = memories.map((item) => `- ${item.content}`);
+    return [{
+        role: 'assistant',
+        content: `以下是你已经记住的陪伴信息，请自然地在回答里参考，不要生硬复述：\n${lines.join('\n')}`,
+    }];
+}
+
+function isRemoteBackendMode() {
+    try {
+        const url = new URL(backendBaseUrl);
+        return url.hostname !== '127.0.0.1' && url.hostname !== 'localhost';
+    } catch {
+        return true;
+    }
+}
+
 function getModelPreviewCandidates(modelPath: string) {
     const normalized = modelPath.replace(/\\/g, '/');
     const slashIndex = normalized.lastIndexOf('/');
@@ -979,6 +1129,14 @@ function syncDataDirForm() {
     if (input) {
         input.value = currentDataDir;
     }
+}
+
+function syncDataDirSectionVisibility() {
+    const item = document.getElementById('data-dir-settings-item');
+    if (!item) {
+        return;
+    }
+    item.style.display = isRemoteBackendMode() ? 'none' : '';
 }
 
 function renderCompanionList(companions: CompanionProfile[]) {
@@ -2555,6 +2713,7 @@ async function sendMessage() {
 
     input.value = '';
     markUserActivity();
+    const memoryCandidates = persistFrontendMemoryCandidates(text);
 
     setCompanionState('listening');
     addMessage('user', text);
@@ -2565,6 +2724,7 @@ async function sendMessage() {
         setCompanionState('thinking');
         let assistantContent = '';
         let assistantMessageContent = addLoadingAssistantMessage();
+        const memoryAcknowledgement = buildMemoryAcknowledgement(memoryCandidates);
 
         const finalContent = await chatClient.streamAndYield(
             text,
@@ -2586,6 +2746,13 @@ async function sendMessage() {
             setAssistantMessageLoading(assistantMessageContent, false);
             assistantMessageContent.textContent = finalContent;
         }
+        if (memoryAcknowledgement) {
+            const ackDiv = addMessage('assistant', memoryAcknowledgement);
+            if (ackDiv) {
+                ackDiv.parentElement?.classList.add('memory-ack');
+            }
+        }
+        void refreshMemoryList();
         startTalkingAnimation(finalContent);
     } catch (error) {
         console.error('❌ 发送消息失败:', error);
@@ -2677,7 +2844,7 @@ function renderChatHistory(messages: ChatMessage[]) {
     messages.forEach((message) => addMessage(message.role, message.content));
 }
 
-function renderMemoryList(memories: MemoryItem[]) {
+function renderMemoryList(memories: FrontendMemoryItem[]) {
     const container = document.getElementById('memory-list');
     if (!container) return;
 
@@ -2720,10 +2887,10 @@ function renderMemoryList(memories: MemoryItem[]) {
             text.textContent = memory.content;
 
             const button = document.createElement('button');
-            button.dataset.memoryId = String(memory.id);
+            button.dataset.memoryId = memory.id;
             button.textContent = '删除';
             button.addEventListener('click', async () => {
-                await chatClient.deleteMemory(memory.id);
+                deleteFrontendMemory(memory.id);
                 logProductEvent('memory_deleted', { id: memory.id });
                 await refreshMemoryList();
             });
@@ -2738,7 +2905,7 @@ function renderMemoryList(memories: MemoryItem[]) {
 }
 
 async function refreshMemoryList() {
-    const memories = await chatClient.loadMemory();
+    const memories = buildFrontendMemorySummary();
     logProductEvent('memory_viewed', { count: memories.length });
     renderMemoryList(memories);
 }
@@ -2785,6 +2952,7 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
             .filter((model) => model.source === 'catalog')
             .map((model) => [model.name, model]),
     );
+    const catalogKeys = new Set(catalog.map((model) => model.key));
 
     Object.keys(live2dModels)
         .filter((key) => !importedModelKeys.has(key))
@@ -2848,7 +3016,7 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
     });
 
     importedModels.forEach((model) => {
-        if (model.source === 'catalog' && catalogInstalledByName.has(model.name)) {
+        if (model.source === 'catalog' && Array.from(catalogKeys).some((catalogKey) => model.model_path.includes(`/imported/${catalogKey}/`))) {
             return;
         }
         const key = getImportedModelKey(model);
@@ -2958,6 +3126,7 @@ async function initializeStandaloneSettingsWindow() {
     updateScaleControls();
     syncCompanionSettingsForm();
     syncDataDirForm();
+    syncDataDirSectionVisibility();
     try {
         await refreshCompanionList();
         await refreshMemoryList();
@@ -3264,6 +3433,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     syncAmbientCompanionMode();
     hideBootstrapError();
     await loadDataDirInfo();
+    syncDataDirSectionVisibility();
 
     window.setInterval(() => {
         syncAmbientCompanionMode();
