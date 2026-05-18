@@ -65,21 +65,21 @@ MODEL_CATALOG = [
         "name": "Chitose",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "chitose",
         "preview_path": "/model-previews/builtin/chitose.png",
-        "builtin": True,
+        "builtin": False,
     },
     {
         "key": "hiyori",
         "name": "Hiyori",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "hiyori",
         "preview_path": "/model-previews/builtin/hiyori.png",
-        "builtin": True,
+        "builtin": False,
     },
     {
         "key": "shizuku",
         "name": "Shizuku",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "shizuku",
         "preview_path": "/model-previews/builtin/shizuku.png",
-        "builtin": True,
+        "builtin": False,
     },
     {
         "key": "hiyori_pro_zh",
@@ -116,6 +116,104 @@ MODEL_CATALOG = [
         "preview_path": "/model-previews/builtin/natori_pro_zh.png",
         "builtin": False,
     },
+    {
+        "key": "catalog-chino11",
+        "name": "Chino11",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "chino11---chino11-model3---3",
+        "preview_path": "/model-previews/imported/7.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-epsilon",
+        "name": "Epsilon",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "epsilon---epsilon-model3---1",
+        "preview_path": "/model-previews/imported/8.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-haru-greeter",
+        "name": "Haru Greeter",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "haru-greeter-pro-jp---haru-greeter-t05-model3---1",
+        "preview_path": "/model-previews/imported/10.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-izumi",
+        "name": "Izumi",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "izumi---izumi-illust-model3---1",
+        "preview_path": "/model-previews/imported/11.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-kitu17",
+        "name": "KITU17",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "kitu17---kitu17-model3---1",
+        "preview_path": "/model-previews/imported/12.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-neko",
+        "name": "Neko",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "neko---neko--1-0-model3---1",
+        "preview_path": "/model-previews/imported/13.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-nicole",
+        "name": "Nicole",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "nicole---nicole-model3---1",
+        "preview_path": "/model-previews/imported/14.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-raiga",
+        "name": "Raiga",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "raiga-free---raiga-model3---1",
+        "preview_path": "/model-previews/imported/15.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-toki",
+        "name": "Toki",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "toki20220227---20220227toki-model3---1",
+        "preview_path": "/model-previews/imported/17.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-hijiki",
+        "name": "Hijiki",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "tororo-hijiki---hijiki-model3---1",
+        "preview_path": "/model-previews/imported/18.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-tororo",
+        "name": "Tororo",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "tororo-hijiki---tororo-model3---2",
+        "preview_path": "/model-previews/imported/19.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-wanderer",
+        "name": "Wanderer",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "散兵-流浪者免费模型---散兵-model3---1",
+        "preview_path": "/model-previews/imported/4.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-changli",
+        "name": "Changli",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "长离带水印---长离-model3---1",
+        "preview_path": "/model-previews/imported/22.png",
+        "builtin": False,
+    },
+    {
+        "key": "catalog-witch",
+        "name": "Witch",
+        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "魔女---魔女-model3---1",
+        "preview_path": "/model-previews/imported/23.png",
+        "builtin": False,
+    },
 ]
 
 BUILTIN_MODEL_KEYS = {item["key"] for item in MODEL_CATALOG if item["builtin"]}
@@ -126,14 +224,27 @@ def get_model_catalog_item(model_key: str) -> dict | None:
             return item
     return None
 
+
+def _resolve_catalog_manifest_path(item: dict) -> tuple[Path, str]:
+    source_manifest = _resolve_model_manifest(item["source_dir"])
+    relative_manifest = source_manifest.relative_to(item["source_dir"]).as_posix()
+    return source_manifest, relative_manifest
+
+
+def _expected_catalog_public_model_path(item: dict) -> str:
+    _, relative_manifest = _resolve_catalog_manifest_path(item)
+    slug = item["key"]
+    return f"/live2d/imported/{slug}/{relative_manifest}"
+
 def model_to_response(item: dict) -> dict:
+    expected_public_path = _expected_catalog_public_model_path(item) if not item["builtin"] else None
     return {
         "key": item["key"],
         "name": item["name"],
         "preview_path": item["preview_path"],
         "builtin": item["builtin"],
         "installed": item["key"] in BUILTIN_MODEL_KEYS or any(
-            model["model_path"].endswith(f"/{item['key']}.model3.json") for model in list_imported_models()
+            model["model_path"] == expected_public_path for model in list_imported_models()
         ),
     }
 
@@ -1133,15 +1244,14 @@ def _install_catalog_model(item: dict) -> dict:
     if not source_dir.exists():
         raise HTTPException(status_code=404, detail="Source model directory not found")
 
-    source_manifest = _resolve_model_manifest(source_dir)
+    source_manifest, relative_manifest = _resolve_catalog_manifest_path(item)
     slug = item["key"]
     target_root = get_imported_models_dir() / slug
     if target_root.exists():
         shutil.rmtree(target_root)
     shutil.copytree(source_dir, target_root)
 
-    relative_manifest = source_manifest.relative_to(source_dir)
-    public_model_path = f"/live2d/imported/{slug}/{relative_manifest.as_posix()}"
+    public_model_path = f"/live2d/imported/{slug}/{relative_manifest}"
     model_id = create_imported_model(item["name"], public_model_path, source="catalog")
     return {"status": "ok", "id": model_id, "model_path": public_model_path, "key": item["key"]}
 

@@ -118,11 +118,9 @@ function isModelStandaloneWindow() {
     return currentWindowLabel === 'model';
 }
 const cubismCoreUrl = '/vendor/live2dcubismcore.min.js';
+const PACKAGED_BUILTIN_MODEL_KEYS = new Set(['hiyori_pro_zh', 'kei']);
 const live2dModels: Record<string, string> = {
     kei: '/live2d/kei_en/kei_basic_free/runtime/kei_basic_free.model3.json',
-    chitose: '/live2d/chitose/chitose_t02.model3.json',
-    hiyori: '/live2d/hiyori/hiyori_pro_jp.model3.json',
-    shizuku: '/live2d/shizuku/runtime/shizuku.model3.json',
     hiyori_pro_zh: '/live2d/hiyori_pro_zh/runtime/hiyori_pro_t11.model3.json',
 };
 const modelDisplayNames: Record<string, string> = {
@@ -566,12 +564,22 @@ function getGeneratedPreviewPath(modelKey: string) {
         const importedId = modelKey.split(':')[1] || 'unknown';
         return `${backendBaseUrl}/model-previews/imported/${importedId}.png?v=${modelPreviewVersion}`;
     }
+    if (!PACKAGED_BUILTIN_MODEL_KEYS.has(modelKey)) {
+        return `${backendBaseUrl}/model-previews/builtin/${modelKey}.png?v=${modelPreviewVersion}`;
+    }
     return `/model-previews/builtin/${modelKey}.png?v=${modelPreviewVersion}`;
 }
 
 function resolveModelAssetPath(path: string) {
     if (/^https?:\/\//i.test(path)) {
         return path;
+    }
+    if (path.startsWith('/model-previews/builtin/')) {
+        const fileName = path.split('/').pop() || '';
+        const modelKey = fileName.replace(/\.(png|jpg)$/i, '');
+        if (!PACKAGED_BUILTIN_MODEL_KEYS.has(modelKey)) {
+            return `${backendBaseUrl}${path}`;
+        }
     }
     if (path.startsWith('/live2d/imported/') || path.startsWith('/model-previews/imported/')) {
         return `${backendBaseUrl}${path}`;
@@ -658,14 +666,40 @@ function buildModelCard(name: string, detailText: string, modelKey: string, mode
     return card;
 }
 
-function buildCatalogModelCard(name: string, previewPath: string, modelKey: string, installed: boolean, onInstall: () => void) {
-    const card = buildModelCard(name, installed ? '已下载' : '点击下载后使用', modelKey, previewPath);
+function buildDownloadableModelCard(name: string, detailText: string, modelKey: string, modelPath: string, installed: boolean, onInstall: () => void) {
+    const card = buildModelCard(name, detailText, modelKey, modelPath);
     const button = card.querySelector('button');
-    if (button) {
-        button.textContent = installed ? '已安装' : '下载使用';
-        button.disabled = installed;
-        button.addEventListener('click', onInstall);
+    if (!button) {
+        return card;
     }
+
+    if (modelKey === currentCharacter) {
+        button.textContent = '当前使用中';
+        button.disabled = true;
+        return card;
+    }
+
+    if (installed) {
+        button.textContent = '切换';
+        button.disabled = false;
+        return card;
+    }
+
+    button.textContent = '下载使用';
+    button.disabled = false;
+    button.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        button.disabled = true;
+        button.textContent = '下载中...';
+        try {
+            await onInstall();
+        } catch (error) {
+            console.error('Failed to install catalog model.', error);
+            button.disabled = false;
+            button.textContent = '下载使用';
+        }
+    });
     return card;
 }
 
@@ -2699,22 +2733,49 @@ function renderBuiltInModelList(importedModels: ImportedModelItem[] = []) {
     });
 }
 
-async function renderCatalogModelList() {
-    const list = document.getElementById('catalog-model-list');
+async function renderAvailableModelList(importedModels: ImportedModelItem[] = []) {
+    const list = document.getElementById('builtin-model-list');
     if (!list) return;
     const catalog = await chatClient.loadCatalogModels();
     list.innerHTML = '';
+
+    Object.keys(live2dModels)
+        .filter((key) => !importedModelKeys.has(key))
+        .forEach((key) => {
+            list.appendChild(
+                buildModelCard(
+                    getCharacterDisplayName(key),
+                    key === currentCharacter ? '当前使用中' : '可用模型',
+                    key,
+                    live2dModels[key],
+                ),
+            );
+        });
+
     catalog.forEach((model) => {
         list.appendChild(
-            buildCatalogModelCard(
+            buildDownloadableModelCard(
                 model.name,
-                model.preview_path,
+                model.installed ? '已下载，可切换使用' : '先下载，下载完成后即可切换',
                 model.key,
+                model.preview_path,
                 model.installed,
                 async () => {
                     await chatClient.installCatalogModel(model.key);
                     await refreshModelPanel();
                 },
+            ),
+        );
+    });
+
+    importedModels.forEach((model) => {
+        const key = getImportedModelKey(model);
+        list.appendChild(
+            buildModelCard(
+                model.name,
+                key === currentCharacter ? '当前使用中' : '可用模型',
+                key,
+                model.model_path,
             ),
         );
     });
@@ -2730,8 +2791,7 @@ async function refreshModelPanel() {
         summary.textContent = `${appSettings.character_name} · ${getCharacterDisplayName(currentCharacter)}`;
     }
 
-    renderBuiltInModelList(imported);
-    await renderCatalogModelList();
+    await renderAvailableModelList(imported);
 }
 
 function openModelPanel() {

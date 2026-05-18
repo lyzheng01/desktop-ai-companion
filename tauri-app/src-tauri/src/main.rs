@@ -3,17 +3,13 @@
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
-use std::net::{SocketAddr, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const CHAT_WINDOW_LABEL: &str = "chat";
 const SETTINGS_WINDOW_LABEL: &str = "settings";
 const MODEL_WINDOW_LABEL: &str = "model";
-const BACKEND_HOST: &str = "0.0.0.0";
-const BACKEND_PORT: u16 = 8080;
 const BACKEND_PUBLIC_URL: &str = "http://119.91.32.174:8080";
 
 fn show_main_window_inner(app: &AppHandle) {
@@ -94,11 +90,6 @@ fn get_backend_base_url() -> String {
     std::env::var("DESKTOP_AI_COMPANION_BACKEND_URL").unwrap_or_else(|_| BACKEND_PUBLIC_URL.to_string())
 }
 
-fn is_backend_running() -> bool {
-    let addr = SocketAddr::from(([127, 0, 0, 1], BACKEND_PORT));
-    TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok()
-}
-
 fn dev_backend_command() -> Command {
     let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -112,46 +103,19 @@ fn dev_backend_command() -> Command {
         .arg("uvicorn")
         .arg("backend.server:app")
         .arg("--host")
-        .arg(BACKEND_HOST)
+        .arg("0.0.0.0")
         .arg("--port")
-        .arg(BACKEND_PORT.to_string());
+        .arg("8080");
     cmd
 }
 
-fn bundled_backend_command(app: &AppHandle) -> Result<Command, String> {
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|err| format!("failed to resolve resource dir: {err}"))?;
-    let executable_name = if cfg!(target_os = "windows") {
-        "backend-service.exe"
-    } else {
-        "backend-service"
-    };
-    let executable = resource_dir.join(executable_name);
-    if !executable.exists() {
-        return Err(format!("bundled backend not found: {}", executable.display()));
-    }
-
-    let mut cmd = Command::new(executable);
-    cmd.current_dir(resource_dir);
-    Ok(cmd)
-}
-
 fn start_backend(app: &AppHandle) -> Result<Option<Child>, String> {
-    if is_backend_running() {
+    if !cfg!(debug_assertions) {
         return Ok(None);
     }
 
-    if !cfg!(debug_assertions) && !cfg!(target_os = "windows") {
-        return Ok(None);
-    }
-
-    let mut cmd = if cfg!(debug_assertions) {
-        dev_backend_command()
-    } else {
-        bundled_backend_command(app)?
-    };
+    let _ = app;
+    let mut cmd = dev_backend_command();
 
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     cmd.spawn()
