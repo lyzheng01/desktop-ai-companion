@@ -1588,7 +1588,8 @@ function applyCurrentScale() {
     applyScaledViewport();
     const fitScale = computeFitScale();
     autoFitScale = fitScale;
-    currentModel.scale.set(fitScale, fitScale);
+    const finalScale = fitScale * currentScale;
+    currentModel.scale.set(finalScale, finalScale);
     baseModelX = (app.screen.width - currentModel.width) / 2;
     baseModelY = app.screen.height - currentModel.height;
     currentModel.x = baseModelX;
@@ -3223,11 +3224,7 @@ async function initializeStandaloneChatWindow() {
         await getCurrentWindow().setFocus();
     });
 
-    document.addEventListener('pointerdown', (event) => {
-        if (event.button !== 0) return;
-        if ((event.target as HTMLElement).closest('button, input, textarea, select, option, label, a')) return;
-        void getCurrentWindow().startDragging();
-    });
+    bindDraggablePanel('#chat-window', '.chat-header');
 }
 
 async function initializeStandaloneSettingsWindow() {
@@ -3250,11 +3247,7 @@ async function initializeStandaloneSettingsWindow() {
         console.warn('Failed to initialize standalone settings window.', error);
     }
 
-    document.addEventListener('pointerdown', (event) => {
-        if (event.button !== 0) return;
-        if ((event.target as HTMLElement).closest('button, input, textarea, select, option, label, a')) return;
-        void getCurrentWindow().startDragging();
-    });
+    bindDraggablePanel('#settings-panel', '.settings-header');
 }
 
 async function initializeStandaloneModelWindow() {
@@ -3283,11 +3276,7 @@ async function initializeStandaloneModelWindow() {
         await refreshModelPanel();
     });
 
-    document.addEventListener('pointerdown', (event) => {
-        if (event.button !== 0) return;
-        if ((event.target as HTMLElement).closest('button, input, textarea, select, option, label, a')) return;
-        void getCurrentWindow().startDragging();
-    });
+    bindDraggablePanel('#model-panel', '.settings-header');
 }
 
 async function promptImportModel() {
