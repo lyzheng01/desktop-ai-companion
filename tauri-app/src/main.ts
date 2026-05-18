@@ -666,41 +666,73 @@ function buildModelCard(name: string, detailText: string, modelKey: string, mode
     return card;
 }
 
-function buildDownloadableModelCard(name: string, detailText: string, modelKey: string, modelPath: string, installed: boolean, onInstall: () => void) {
-    const card = buildModelCard(name, detailText, modelKey, modelPath);
-    const button = card.querySelector('button');
-    if (!button) {
-        return card;
-    }
+function buildPreviewModelCard(
+    name: string,
+    detailText: string,
+    modelKey: string,
+    previewPath: string,
+    buttonText: string,
+    buttonDisabled: boolean,
+    onClick: () => void,
+) {
+    const card = document.createElement('div');
+    card.className = 'model-card';
+    card.dataset.modelKey = modelKey;
 
-    if (modelKey === currentCharacter) {
-        button.textContent = '当前使用中';
-        button.disabled = true;
-        return card;
-    }
+    const thumb = document.createElement('div');
+    thumb.className = 'model-thumb';
 
-    if (installed) {
-        button.textContent = '切换';
-        button.disabled = false;
-        return card;
-    }
+    const img = document.createElement('img');
+    img.alt = name;
+    img.src = resolveModelAssetPath(previewPath);
+    img.addEventListener('error', () => {
+        img.remove();
+        const placeholder = document.createElement('div');
+        placeholder.className = 'model-thumb-placeholder';
+        placeholder.innerHTML = `<strong>${name}</strong><span>暂无预览图</span>`;
+        thumb.appendChild(placeholder);
+    }, { once: true });
+    thumb.appendChild(img);
 
-    button.textContent = '下载使用';
-    button.disabled = false;
-    button.addEventListener('click', async (event) => {
+    const meta = document.createElement('div');
+    meta.className = 'model-meta';
+
+    const title = document.createElement('span');
+    title.className = 'model-name';
+    title.textContent = name;
+
+    const detail = document.createElement('span');
+    detail.className = 'model-detail';
+    detail.textContent = detailText;
+
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = buttonText;
+    button.disabled = buttonDisabled;
+    button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        button.disabled = true;
-        button.textContent = '下载中...';
-        try {
-            await onInstall();
-        } catch (error) {
-            console.error('Failed to install catalog model.', error);
-            button.disabled = false;
-            button.textContent = '下载使用';
-        }
+        onClick();
     });
+
+    meta.appendChild(title);
+    meta.appendChild(detail);
+    card.appendChild(thumb);
+    card.appendChild(meta);
+    card.appendChild(button);
     return card;
+}
+
+function buildDownloadableModelCard(
+    name: string,
+    detailText: string,
+    modelKey: string,
+    previewPath: string,
+    buttonText: string,
+    buttonDisabled: boolean,
+    onClick: () => void,
+) {
+    return buildPreviewModelCard(name, detailText, modelKey, previewPath, buttonText, buttonDisabled, onClick);
 }
 
 function syncImportedModelRegistry(models: ImportedModelItem[]) {
@@ -2739,6 +2771,12 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
     const catalog = await chatClient.loadCatalogModels();
     list.innerHTML = '';
 
+    const catalogInstalledByName = new Map(
+        importedModels
+            .filter((model) => model.source === 'catalog')
+            .map((model) => [model.name, model]),
+    );
+
     Object.keys(live2dModels)
         .filter((key) => !importedModelKeys.has(key))
         .forEach((key) => {
@@ -2753,22 +2791,51 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
         });
 
     catalog.forEach((model) => {
+        const installedModel = catalogInstalledByName.get(model.name);
+        const installedModelKey = installedModel ? getImportedModelKey(installedModel) : null;
+        const isCurrentInstalledModel = installedModelKey === currentCharacter;
+        const isInstalled = Boolean(installedModel);
+
+        let detailText = '先下载，下载完成后即可切换';
+        let buttonText = '下载使用';
+        let buttonDisabled = false;
+        let onClick = async () => {
+            await chatClient.installCatalogModel(model.key);
+            await refreshModelPanel();
+        };
+
+        if (isCurrentInstalledModel) {
+            detailText = '当前使用中';
+            buttonText = '当前使用中';
+            buttonDisabled = true;
+            onClick = () => undefined;
+        } else if (isInstalled && installedModelKey) {
+            detailText = '已下载，可切换使用';
+            buttonText = '切换';
+            onClick = () => {
+                closeModelPanel();
+                switchCharacter(installedModelKey);
+                void refreshModelPanel();
+            };
+        }
+
         list.appendChild(
             buildDownloadableModelCard(
                 model.name,
-                model.installed ? '已下载，可切换使用' : '先下载，下载完成后即可切换',
+                detailText,
                 model.key,
                 model.preview_path,
-                model.installed,
-                async () => {
-                    await chatClient.installCatalogModel(model.key);
-                    await refreshModelPanel();
-                },
+                buttonText,
+                buttonDisabled,
+                onClick,
             ),
         );
     });
 
     importedModels.forEach((model) => {
+        if (model.source === 'catalog' && catalogInstalledByName.has(model.name)) {
+            return;
+        }
         const key = getImportedModelKey(model);
         list.appendChild(
             buildModelCard(
