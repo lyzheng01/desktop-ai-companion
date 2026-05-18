@@ -1584,7 +1584,10 @@ function computeFitScale() {
 }
 
 function applyCurrentScale() {
-    if (!currentModel) return;
+    if (!currentModel) {
+        updateScaleControls();
+        return;
+    }
     applyScaledViewport();
     const fitScale = computeFitScale();
     autoFitScale = fitScale;
@@ -1602,6 +1605,16 @@ function applyCurrentScale() {
 async function setScale(scale: number, persist = true) {
     currentScale = Math.min(1.4, Math.max(0.01, scale));
     appSettings.character_scales[currentCharacter] = currentScale;
+
+    if (isSettingsStandaloneWindow()) {
+        updateScaleControls();
+        await getCurrentWebviewWindow().emitTo('main', 'scale-change-requested', { scale: currentScale, persist });
+        if (persist) {
+            void saveAppSettings();
+        }
+        return;
+    }
+
     applyCurrentScale();
 
     const { width, height } = getScaledWindowSize(currentScale);
@@ -3247,6 +3260,15 @@ async function initializeStandaloneSettingsWindow() {
         console.warn('Failed to initialize standalone settings window.', error);
     }
 
+    await getCurrentWebviewWindow().listen<{ scale?: number }>('scale-updated', async (event) => {
+        const nextScale = event.payload?.scale;
+        if (typeof nextScale !== 'number' || !Number.isFinite(nextScale)) {
+            return;
+        }
+        currentScale = nextScale;
+        updateScaleControls();
+    });
+
     bindDraggablePanel('#settings-panel', '.settings-header');
 }
 
@@ -3558,6 +3580,14 @@ window.addEventListener('DOMContentLoaded', async () => {
             await getCurrentWebviewWindow().emitTo('model', 'model-switched', { modelKey });
             await getCurrentWindow().show();
             await getCurrentWindow().setFocus();
+        });
+        await getCurrentWebviewWindow().listen<{ scale?: number; persist?: boolean }>('scale-change-requested', async (event) => {
+            const nextScale = event.payload?.scale;
+            if (typeof nextScale !== 'number' || !Number.isFinite(nextScale)) {
+                return;
+            }
+            await setScale(nextScale, event.payload?.persist !== false);
+            await getCurrentWebviewWindow().emitTo('settings', 'scale-updated', { scale: currentScale });
         });
         if (firstRunRequired) {
             showFirstRunPanel();
