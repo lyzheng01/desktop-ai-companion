@@ -1558,16 +1558,8 @@ function getScaledWindowSize(scale: number) {
 }
 
 function applyScaledViewport() {
-    const container = document.getElementById('character-container');
-    if (container) {
-        const { width, height } = getScaledWindowSize(currentScale);
-        container.style.width = `${width}px`;
-        container.style.height = `${height}px`;
-    }
-
     if (app) {
-        const { width, height } = getScaledWindowSize(currentScale);
-        app.renderer.resize(width, height);
+        app.renderer.resize(BASE_WINDOW_WIDTH, BASE_WINDOW_HEIGHT);
     }
 }
 
@@ -1616,13 +1608,6 @@ async function setScale(scale: number, persist = true) {
     }
 
     applyCurrentScale();
-
-    const { width, height } = getScaledWindowSize(currentScale);
-    try {
-        await getCurrentWindow().setSize(new LogicalSize(width, height));
-    } catch (error) {
-        console.debug('Window resize failed.', error);
-    }
 
     if (persist) {
         void saveAppSettings();
