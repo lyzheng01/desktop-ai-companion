@@ -1967,7 +1967,10 @@ function startTalkingAnimation(text: string) {
 
 function isCompanionSleepWindow(now: Date) {
     const hour = now.getHours();
-    return appSettings.proactive_mode === 'quiet' || isDndActive(now) || hour >= 23 || hour < 6;
+    if (appSettings.interaction_mode === 'sleep') {
+        return true;
+    }
+    return isDndActive(now) || hour >= 23 || hour < 6;
 }
 
 function syncAmbientCompanionMode() {
@@ -3126,23 +3129,6 @@ window.addEventListener('DOMContentLoaded', async () => {
         bindCompanionSettingsForm();
         bindDataDirSettingsForm();
 
-        const testMorningBtn = document.getElementById('test-morning-btn');
-        testMorningBtn?.addEventListener('click', () => {
-            void triggerProactivePreview('morning_greeting');
-        });
-        const testWeatherBtn = document.getElementById('test-weather-btn');
-        testWeatherBtn?.addEventListener('click', () => {
-            void triggerProactivePreview('weather_update');
-        });
-        const testMealBtn = document.getElementById('test-meal-btn');
-        testMealBtn?.addEventListener('click', () => {
-            void triggerProactivePreview('meal_time');
-        });
-        const testRestBtn = document.getElementById('test-rest-btn');
-        testRestBtn?.addEventListener('click', () => {
-            void triggerProactivePreview('long_work_session');
-        });
-
         const scaleSlider = document.getElementById('scale-slider') as HTMLInputElement | null;
         scaleSlider?.addEventListener('input', (event) => {
             const target = event.target as HTMLInputElement;
@@ -3206,26 +3192,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (settingsCloseBtn) {
         settingsCloseBtn.addEventListener('click', closeSettingsPanel);
     }
-
-    const testMorningBtn = document.getElementById('test-morning-btn');
-    testMorningBtn?.addEventListener('click', () => {
-        void triggerProactivePreview('morning_greeting');
-    });
-
-    const testWeatherBtn = document.getElementById('test-weather-btn');
-    testWeatherBtn?.addEventListener('click', () => {
-        void triggerProactivePreview('weather_update');
-    });
-
-    const testMealBtn = document.getElementById('test-meal-btn');
-    testMealBtn?.addEventListener('click', () => {
-        void triggerProactivePreview('meal_time');
-    });
-
-    const testRestBtn = document.getElementById('test-rest-btn');
-    testRestBtn?.addEventListener('click', () => {
-        void triggerProactivePreview('long_work_session');
-    });
 
     const modelCloseBtn = document.querySelector('.model-close-btn');
     if (modelCloseBtn) {
