@@ -46,6 +46,13 @@ type FrontendMemoryCandidate = {
     explicit: boolean;
 };
 
+type FrontendHistoryItem = {
+    id: string;
+    role: 'user' | 'assistant';
+    content: string;
+    timestamp: string;
+};
+
 type CharacterBehavior = {
     idleGroups: string[];
     tapGroups: string[];
@@ -104,10 +111,12 @@ const BASE_WINDOW_WIDTH = 400;
 const BASE_WINDOW_HEIGHT = 600;
 const DEFAULT_BACKEND_URL = 'http://119.91.32.174:8080';
 let backendBaseUrl = DEFAULT_BACKEND_URL;
-const frontendMemoryStorageKey = 'desktop-ai-companion.frontend-memory.v1';
+let frontendMemoriesCache: FrontendMemoryItem[] = [];
+let frontendHistoryCache: FrontendHistoryItem[] = [];
 const chatClient = new ChatClient({
     apiEndpoint: `${backendBaseUrl}/chat`,
     memoryContextProvider: () => buildFrontendMemoryContextMessages(),
+    historyContextProvider: () => buildFrontendHistoryContextMessages(),
 });
 
 async function resolveBackendBaseUrl() {
@@ -501,12 +510,8 @@ async function loadAppSettings(options: {
     activeCompanionOverride?: CompanionProfile | null;
 } = {}) {
     try {
-        const response = await fetch(`${backendBaseUrl}/config`);
-        if (!response.ok) {
-            throw new Error(`Config request failed: ${response.status}`);
-        }
-
-        const data = await response.json() as AppSettings;
+        const raw = await invoke<string>('load_frontend_config_file');
+        const data = JSON.parse(raw || '{}') as Partial<AppSettings>;
         appSettings = {
             user_nickname: data.user_nickname ?? '小伙伴',
             user_display_name: data.user_display_name ?? '你',
@@ -549,11 +554,7 @@ async function saveAppSettings() {
     appSettings.window_scale = currentScale;
 
     try {
-        await fetch(`${backendBaseUrl}/config`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(appSettings),
-        });
+        await invoke('save_frontend_config_file', { payload: JSON.stringify(appSettings) });
     } catch (error) {
         console.warn('Failed to save config.', error);
     }
@@ -625,12 +626,8 @@ function resolveModelAssetPath(path: string) {
     return path;
 }
 
-function loadFrontendMemories(): FrontendMemoryItem[] {
+function parseFrontendMemories(raw: string): FrontendMemoryItem[] {
     try {
-        const raw = window.localStorage.getItem(frontendMemoryStorageKey);
-        if (!raw) {
-            return [];
-        }
         const parsed = JSON.parse(raw) as FrontendMemoryItem[];
         if (!Array.isArray(parsed)) {
             return [];
@@ -641,8 +638,79 @@ function loadFrontendMemories(): FrontendMemoryItem[] {
     }
 }
 
-function saveFrontendMemories(memories: FrontendMemoryItem[]) {
-    window.localStorage.setItem(frontendMemoryStorageKey, JSON.stringify(memories));
+function parseFrontendHistory(raw: string): FrontendHistoryItem[] {
+    try {
+        const parsed = JSON.parse(raw) as FrontendHistoryItem[];
+        if (!Array.isArray(parsed)) {
+            return [];
+        }
+        return parsed.filter((item) => item && (item.role === 'user' || item.role === 'assistant') && typeof item.content === 'string' && typeof item.timestamp === 'string');
+    } catch {
+        return [];
+    }
+}
+
+async function hydrateFrontendMemories() {
+    try {
+        const raw = await invoke<string>('load_frontend_memory_file');
+        frontendMemoriesCache = parseFrontendMemories(raw);
+    } catch (error) {
+        console.warn('Failed to load frontend memory file, using empty memory cache.', error);
+        frontendMemoriesCache = [];
+    }
+}
+
+async function hydrateFrontendHistory() {
+    try {
+        const raw = await invoke<string>('load_frontend_history_file');
+        frontendHistoryCache = parseFrontendHistory(raw);
+        cleanupFrontendHistory(false);
+    } catch (error) {
+        console.warn('Failed to load frontend history file, using empty history cache.', error);
+        frontendHistoryCache = [];
+    }
+}
+
+function persistFrontendMemories() {
+    const payload = JSON.stringify(frontendMemoriesCache);
+    void invoke('save_frontend_memory_file', { payload }).catch((error) => {
+        console.warn('Failed to save frontend memory file.', error);
+    });
+}
+
+function persistFrontendHistory() {
+    const payload = JSON.stringify(frontendHistoryCache);
+    void invoke('save_frontend_history_file', { payload }).catch((error) => {
+        console.warn('Failed to save frontend history file.', error);
+    });
+}
+
+function cleanupFrontendHistory(persist = true) {
+    const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    frontendHistoryCache = frontendHistoryCache
+        .filter((item) => {
+            const ts = Date.parse(item.timestamp);
+            return Number.isFinite(ts) && ts >= cutoff;
+        })
+        .slice(-300);
+    if (persist) {
+        persistFrontendHistory();
+    }
+}
+
+function appendFrontendHistory(role: 'user' | 'assistant', content: string) {
+    frontendHistoryCache.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        role,
+        content,
+        timestamp: new Date().toISOString(),
+    });
+    cleanupFrontendHistory();
+}
+
+function clearFrontendHistory() {
+    frontendHistoryCache = [];
+    persistFrontendHistory();
 }
 
 function addFrontendMemory(content: string, scope: FrontendMemoryItem['scope']) {
@@ -650,22 +718,22 @@ function addFrontendMemory(content: string, scope: FrontendMemoryItem['scope']) 
     if (!normalized) {
         return;
     }
-    const memories = loadFrontendMemories();
-    if (memories.some((item) => item.content === normalized && item.scope === scope)) {
+    if (frontendMemoriesCache.some((item) => item.content === normalized && item.scope === scope)) {
         return;
     }
-    memories.unshift({
+    frontendMemoriesCache.unshift({
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         content: normalized,
         scope,
         created_at: new Date().toISOString(),
     });
-    saveFrontendMemories(memories.slice(0, 30));
+    frontendMemoriesCache = frontendMemoriesCache.slice(0, 30);
+    persistFrontendMemories();
 }
 
 function deleteFrontendMemory(memoryId: string) {
-    const memories = loadFrontendMemories().filter((item) => item.id !== memoryId);
-    saveFrontendMemories(memories);
+    frontendMemoriesCache = frontendMemoriesCache.filter((item) => item.id !== memoryId);
+    persistFrontendMemories();
 }
 
 function extractFrontendMemoryCandidates(message: string): FrontendMemoryCandidate[] {
@@ -714,7 +782,7 @@ function buildMemoryAcknowledgement(candidates: FrontendMemoryCandidate[]) {
 }
 
 function buildFrontendMemorySummary() {
-    const stored = loadFrontendMemories();
+    const stored = frontendMemoriesCache;
     const derived: FrontendMemoryItem[] = [
         {
             id: 'derived-user-name',
@@ -749,6 +817,15 @@ function buildFrontendMemoryContextMessages(): ChatMessage[] {
         role: 'assistant',
         content: `以下是你已经记住的陪伴信息，请自然地在回答里参考，不要生硬复述：\n${lines.join('\n')}`,
     }];
+}
+
+function buildFrontendHistoryContextMessages(): ChatMessage[] {
+    cleanupFrontendHistory(false);
+    return frontendHistoryCache.slice(-12).map((item) => ({
+        role: item.role,
+        content: item.content,
+        timestamp: item.timestamp,
+    }));
 }
 
 function isRemoteBackendMode() {
@@ -2737,6 +2814,7 @@ async function sendMessage() {
     input.value = '';
     markUserActivity();
     const memoryCandidates = persistFrontendMemoryCandidates(text);
+    appendFrontendHistory('user', text);
 
     setCompanionState('listening');
     addMessage('user', text);
@@ -2769,6 +2847,7 @@ async function sendMessage() {
             setAssistantMessageLoading(assistantMessageContent, false);
             assistantMessageContent.textContent = finalContent;
         }
+        appendFrontendHistory('assistant', finalContent);
         if (memoryAcknowledgement) {
             const ackDiv = addMessage('assistant', memoryAcknowledgement);
             if (ackDiv) {
@@ -2781,6 +2860,7 @@ async function sendMessage() {
         console.error('❌ 发送消息失败:', error);
         setCompanionState('idle');
         addMessage('assistant', '抱歉，我遇到了一些问题，请稍后再试。');
+        appendFrontendHistory('assistant', '抱歉，我遇到了一些问题，请稍后再试。');
     }
 }
 
@@ -2845,10 +2925,14 @@ async function ensureChatHistoryLoaded() {
     }
 
     chatHistoryLoadPromise = (async () => {
-        const history = await chatClient.loadHistory();
-        renderChatHistory(history);
+        cleanupFrontendHistory(false);
+        renderChatHistory(frontendHistoryCache.map((item) => ({
+            role: item.role,
+            content: item.content,
+            timestamp: item.timestamp,
+        })));
         chatHistoryLoaded = true;
-        logProductEvent('history_restored', { count: history.length });
+        logProductEvent('history_restored', { count: frontendHistoryCache.length });
     })().catch((error) => {
         chatHistoryLoaded = false;
         throw error;
@@ -2927,6 +3011,13 @@ function renderMemoryList(memories: FrontendMemoryItem[]) {
     });
 }
 
+function renderHistoryList() {
+    const chatWindow = document.getElementById('chat-window');
+    if (!chatWindow) {
+        return;
+    }
+}
+
 async function refreshMemoryList() {
     const memories = buildFrontendMemorySummary();
     logProductEvent('memory_viewed', { count: memories.length });
@@ -2988,6 +3079,9 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
         });
 
     catalog.forEach((model) => {
+        if (builtinIdentitySet.has(normalizeModelIdentity(model.name))) {
+            return;
+        }
         const installedModel = importedModels.find((item) => {
             if (getInstalledCatalogModelKey(item.model_path, new Set([model.key])) === model.key) {
                 return true;
@@ -3328,6 +3422,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     currentWindowLabel = getCurrentWebviewWindow().label;
     document.body.dataset.windowLabel = currentWindowLabel;
     await resolveBackendBaseUrl();
+    await hydrateFrontendMemories();
+    await hydrateFrontendHistory();
 
     if (isChatStandaloneWindow()) {
         const closeBtn = document.querySelector('.close-btn');

@@ -13,6 +13,7 @@ export interface ChatConfig {
     apiEndpoint?: string;
     model?: string;
     memoryContextProvider?: () => ChatMessage[];
+    historyContextProvider?: () => ChatMessage[];
 }
 
 export interface MemoryItem {
@@ -76,7 +77,8 @@ export class ChatClient {
 
     private buildRequestContext(): ChatMessage[] {
         const memoryContext = this.config.memoryContextProvider?.() ?? [];
-        return [...memoryContext, ...this.messages.slice(-10)];
+        const historyContext = this.config.historyContextProvider?.() ?? [];
+        return [...memoryContext, ...historyContext, ...this.messages.slice(-10)];
     }
 
     // 添加消息监听器
