@@ -2302,6 +2302,13 @@ async function loadLive2DModel() {
         console.log('✅ Live2D 模型加载成功');
     } catch (error) {
         console.error('❌ Live2D 模型加载失败:', error);
+        if (currentCharacter !== 'hiyori_pro_zh') {
+            console.warn('Falling back to packaged default model after load failure.', currentCharacter);
+            currentCharacter = 'hiyori_pro_zh';
+            appSettings.character_type = currentCharacter;
+            await loadLive2DModel();
+            return;
+        }
         // 降级方案：显示占位角色
         showPlaceholderCharacter();
     }
@@ -2794,7 +2801,15 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
         });
 
     catalog.forEach((model) => {
-        const installedModel = catalogInstalledByName.get(model.name);
+        const installedModel = importedModels.find((item) => {
+            if (item.source !== 'catalog') {
+                return false;
+            }
+            if (item.model_path.includes(`/imported/${model.key}/`)) {
+                return true;
+            }
+            return item.name === model.name || item.name === model.key;
+        }) ?? catalogInstalledByName.get(model.name);
         const installedModelKey = installedModel ? getImportedModelKey(installedModel) : null;
         const isCurrentInstalledModel = installedModelKey === currentCharacter;
         const isInstalled = Boolean(installedModel);
