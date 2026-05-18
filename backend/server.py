@@ -937,6 +937,33 @@ def stream_chat_response(message: str, context: list[ChatMessage], config: AppCo
     save_message("assistant", final_reply)
     yield sse_event("done", "done")
 
+
+def safe_stream_chat_response(message: str, context: list[ChatMessage], config: AppConfig):
+    try:
+        yield from stream_chat_response(message, context, config)
+        return
+    except Exception:
+        response_content = build_assistant_reply(message, context, config)
+        save_message("assistant", response_content)
+        yield sse_event("assistant_delta", response_content)
+        yield sse_event("done", "done")
+
+
+def safe_stream_native_live_response(message: str, context: list[ChatMessage], config: AppConfig):
+    try:
+        yield from stream_native_live_response(message, context, config)
+        return
+    except Exception:
+        try:
+            response_content = resolve_live_response(message, context, config)
+        except Exception:
+            response_content = "抱歉，我暂时没能查到最新信息，所以现在不想乱说。你可以稍后再让我查一次。"
+
+        save_message("assistant", response_content)
+        yield sse_event("phase", "searching")
+        yield sse_event("assistant_delta", response_content)
+        yield sse_event("done", "done")
+
 # ============== FastAPI 应用 ==============
 
 app = FastAPI(title="Desktop AI Companion API")
@@ -1036,46 +1063,15 @@ async def chat_stream(request: ChatRequest):
 
     current = apply_active_companion(get_config())
     if needs_live_search(request.message):
-        try:
-            return StreamingResponse(
-                stream_native_live_response(request.message, request.context, current),
-                media_type="text/event-stream",
-            )
-        except Exception:
-            pass
-
-        try:
-            response_content = resolve_live_response(request.message, request.context, current)
-            save_message("assistant", response_content)
-            return StreamingResponse(
-                iter_stream_reply(response_content, phase="searching"),
-                media_type="text/event-stream",
-            )
-        except Exception:
-            response_content = "抱歉，我暂时没能查到最新信息，所以现在不想乱说。你可以稍后再让我查一次。"
-            save_message("assistant", response_content)
-            return StreamingResponse(
-                iter_stream_reply(response_content, phase="searching"),
-                media_type="text/event-stream",
-            )
-
-    try:
         return StreamingResponse(
-            stream_chat_response(request.message, request.context, current),
+            safe_stream_native_live_response(request.message, request.context, current),
             media_type="text/event-stream",
         )
-    except Exception:
-        response_content = build_assistant_reply(
-            request.message,
-            request.context,
-            current,
-        )
-        save_message("assistant", response_content)
 
-        return StreamingResponse(
-            iter_stream_reply(response_content, phase="composing"),
-            media_type="text/event-stream",
-        )
+    return StreamingResponse(
+        safe_stream_chat_response(request.message, request.context, current),
+        media_type="text/event-stream",
+    )
 
 @app.get("/config", response_model=Config)
 async def get_config_endpoint():
