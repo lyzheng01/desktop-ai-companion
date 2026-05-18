@@ -574,6 +574,20 @@ function getImportedModelKey(model: ImportedModelItem) {
     return `imported:${model.id}`;
 }
 
+function normalizeModelIdentity(value: string) {
+    const lower = value.trim().toLowerCase();
+    if (lower === 'mao' || lower.includes('mao')) return 'mao';
+    if (lower === 'hiyori' || lower === 'hiyori cn' || lower.includes('hiyori_pro_zh')) return 'hiyori';
+    if (lower === 'hiyori jp') return 'hiyori-jp';
+    if (lower === 'haru' || lower.includes('haru greeter')) return 'haru';
+    if (lower.includes('chino11')) return 'chino11';
+    if (lower.includes('epsilon')) return 'epsilon';
+    if (lower.includes('changli')) return 'changli';
+    if (lower.includes('wanderer')) return 'wanderer';
+    if (lower.includes('witch')) return 'witch';
+    return lower.replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
 function getInstalledCatalogModelKey(modelPath: string, catalogKeys: Set<string>) {
     for (const catalogKey of catalogKeys) {
         if (modelPath.includes(`/imported/${catalogKey}/`)) {
@@ -2957,6 +2971,8 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
     list.innerHTML = '';
     const catalogKeys = new Set(catalog.map((model) => model.key));
     const catalogNameSet = new Set(catalog.map((model) => model.name));
+    const builtinIdentitySet = new Set(Object.keys(live2dModels).map((key) => normalizeModelIdentity(getCharacterDisplayName(key))));
+    const catalogIdentitySet = new Set(catalog.map((model) => normalizeModelIdentity(model.name)));
 
     Object.keys(live2dModels)
         .filter((key) => !importedModelKeys.has(key))
@@ -3020,7 +3036,8 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
         if (getInstalledCatalogModelKey(model.model_path, catalogKeys)) {
             return;
         }
-        if (catalogNameSet.has(model.name)) {
+        const identity = normalizeModelIdentity(model.name);
+        if (catalogNameSet.has(model.name) || catalogIdentitySet.has(identity) || builtinIdentitySet.has(identity)) {
             return;
         }
         const key = getImportedModelKey(model);
