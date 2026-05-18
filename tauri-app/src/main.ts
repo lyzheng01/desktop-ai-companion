@@ -2830,9 +2830,7 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
             detailText = '已下载，可切换使用';
             buttonText = '切换';
             onClick = () => {
-                closeModelPanel();
-                switchCharacter(installedModelKey);
-                void refreshModelPanel();
+                void requestCharacterSwitch(installedModelKey);
             };
         }
 
