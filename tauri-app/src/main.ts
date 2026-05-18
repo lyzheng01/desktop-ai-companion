@@ -563,7 +563,7 @@ async function saveAppSettings() {
 function updateChatTitle() {
     const title = document.getElementById('chat-title');
     if (title) {
-        title.textContent = `${appSettings.character_name} AI`;
+        title.textContent = appSettings.character_name;
     }
 }
 

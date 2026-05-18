@@ -632,6 +632,31 @@
             min-width: 0;
         }
 
+        .chat-title-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            min-width: 0;
+        }
+
+        .chat-title-badge {
+            width: 24px;
+            height: 24px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            flex: 0 0 auto;
+            border-radius: 999px;
+            background: radial-gradient(circle at 35% 30%, rgba(255, 246, 252, 0.96) 0%, rgba(255, 222, 244, 0.92) 42%, rgba(178, 138, 255, 0.88) 100%);
+            box-shadow: 0 6px 14px rgba(51, 33, 96, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.75);
+        }
+
+        .chat-title-badge svg {
+            width: 18px;
+            height: 18px;
+            display: block;
+        }
+
         .chat-header:active {
             cursor: grabbing;
         }
@@ -1046,7 +1071,25 @@
         <div id="chat-window">
             <div class="chat-header">
                 <div class="chat-header-main">
-                    <h3 id="chat-title">小艾 AI</h3>
+                    <div class="chat-title-row">
+                        <span class="chat-title-badge" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                <path d="M12 3.4C7.03 3.4 3 6.64 3 10.64C3 12.76 4.16 14.66 6.02 15.97L5.4 19.32C5.33 19.7 5.72 20 6.06 19.82L9.42 18.02C10.24 18.2 11.1 18.29 12 18.29C16.97 18.29 21 15.05 21 11.05C21 7.05 16.97 3.4 12 3.4Z" fill="url(#bubbleFill)"/>
+                                <path d="M15.55 5.2L16.1 6.58L17.48 7.13L16.1 7.68L15.55 9.06L15 7.68L13.62 7.13L15 6.58L15.55 5.2Z" fill="#FFF7D6"/>
+                                <path d="M9.1 9.7C9.76 9.7 10.3 10.24 10.3 10.9C10.3 11.57 9.76 12.1 9.1 12.1C8.44 12.1 7.9 11.57 7.9 10.9C7.9 10.24 8.44 9.7 9.1 9.7Z" fill="#7B52D6"/>
+                                <path d="M14.9 9.7C15.56 9.7 16.1 10.24 16.1 10.9C16.1 11.57 15.56 12.1 14.9 12.1C14.24 12.1 13.7 11.57 13.7 10.9C13.7 10.24 14.24 9.7 14.9 9.7Z" fill="#7B52D6"/>
+                                <path d="M8.82 14.27C9.72 15.05 10.75 15.44 12 15.44C13.25 15.44 14.28 15.05 15.18 14.27" stroke="#7B52D6" stroke-width="1.4" stroke-linecap="round"/>
+                                <defs>
+                                    <linearGradient id="bubbleFill" x1="5.2" y1="5" x2="18.7" y2="18.3" gradientUnits="userSpaceOnUse">
+                                        <stop stop-color="#FFF9FE"/>
+                                        <stop offset="0.54" stop-color="#FFD4EF"/>
+                                        <stop offset="1" stop-color="#C89BFF"/>
+                                    </linearGradient>
+                                </defs>
+                            </svg>
+                        </span>
+                        <h3 id="chat-title">小艾</h3>
+                    </div>
                     <div id="chat-status">
                         <span id="chat-status-dot"></span>
                         <span id="chat-status-text">想一下</span>
