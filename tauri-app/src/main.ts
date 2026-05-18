@@ -2956,12 +2956,7 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
     const catalog = await chatClient.loadCatalogModels();
     list.innerHTML = '';
     const catalogKeys = new Set(catalog.map((model) => model.key));
-
-    const catalogInstalledByName = new Map(
-        importedModels
-            .filter((model) => Boolean(getInstalledCatalogModelKey(model.model_path, catalogKeys)))
-            .map((model) => [model.name, model]),
-    );
+    const catalogNameSet = new Set(catalog.map((model) => model.name));
 
     Object.keys(live2dModels)
         .filter((key) => !importedModelKeys.has(key))
@@ -2982,7 +2977,7 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
                 return true;
             }
             return item.name === model.name || item.name === model.key;
-        }) ?? catalogInstalledByName.get(model.name);
+        });
         const installedModelKey = installedModel ? getImportedModelKey(installedModel) : null;
         const isCurrentInstalledModel = installedModelKey === currentCharacter;
         const isInstalled = Boolean(installedModel);
@@ -3023,6 +3018,9 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
 
     importedModels.forEach((model) => {
         if (getInstalledCatalogModelKey(model.model_path, catalogKeys)) {
+            return;
+        }
+        if (catalogNameSet.has(model.name)) {
             return;
         }
         const key = getImportedModelKey(model);
