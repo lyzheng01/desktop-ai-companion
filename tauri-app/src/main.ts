@@ -82,6 +82,7 @@ let chatHistoryLoaded = false;
 let chatHistoryLoadPromise: Promise<void> | null = null;
 let currentScale = 1;
 let autoFitScale = 1;
+let modelBaseFitScale = 1;
 let baseModelX = 0;
 let baseModelY = 0;
 let idleActionTimer: number | null = null;
@@ -109,6 +110,8 @@ let currentWindowLabel = 'main';
 const FREE_COMPANION_LIMIT = 1;
 const BASE_WINDOW_WIDTH = 400;
 const BASE_WINDOW_HEIGHT = 600;
+const MIN_COMPANION_SCALE = 0.7;
+const MAX_COMPANION_SCALE = 1.3;
 const DEFAULT_BACKEND_URL = 'http://119.91.32.174:8080';
 let backendBaseUrl = DEFAULT_BACKEND_URL;
 let frontendMemoriesCache: FrontendMemoryItem[] = [];
@@ -1589,9 +1592,7 @@ function applyCurrentScale() {
         return;
     }
     applyScaledViewport();
-    const fitScale = computeFitScale();
-    autoFitScale = fitScale;
-    const finalScale = fitScale * currentScale;
+    const finalScale = modelBaseFitScale * currentScale;
     currentModel.scale.set(finalScale, finalScale);
     baseModelX = (app.screen.width - currentModel.width) / 2;
     baseModelY = app.screen.height - currentModel.height;
@@ -1603,7 +1604,7 @@ function applyCurrentScale() {
 }
 
 async function setScale(scale: number, persist = true) {
-    currentScale = Math.min(1.4, Math.max(0.01, scale));
+    currentScale = Math.min(MAX_COMPANION_SCALE, Math.max(MIN_COMPANION_SCALE, scale));
     appSettings.character_scales[currentCharacter] = currentScale;
 
     if (isSettingsStandaloneWindow()) {
@@ -2561,6 +2562,10 @@ async function loadLive2DModel() {
             app.stage.removeChildren();
         }
         app.stage.addChild(currentModel);
+
+        const fitScale = computeFitScale();
+        modelBaseFitScale = fitScale;
+        autoFitScale = 1;
 
         applyCurrentScale();
         updateCharacterLabel();
