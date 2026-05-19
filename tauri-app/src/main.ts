@@ -22,7 +22,6 @@ type AppSettings = {
     personality: string[];
     interaction_mode: string;
     proactive_mode: string;
-    chat_model: string;
     window_x: number;
     window_y: number;
     window_scale: number;
@@ -229,13 +228,12 @@ const bubbleLines = {
 const proactiveStorageKey = 'desktop-ai-proactive-state-v1';
 let appSettings: AppSettings = {
     user_nickname: '小伙伴',
-    user_display_name: '你',
+    user_display_name: '主人',
     character_type: 'mao_pro_zh',
     character_name: 'Mao',
     personality: ['温柔'],
     interaction_mode: 'work',
-    proactive_mode: 'quiet',
-    chat_model: 'gpt',
+    proactive_mode: 'greet',
     window_x: 100,
     window_y: 100,
     window_scale: 1,
@@ -517,13 +515,12 @@ async function loadAppSettings(options: {
         const data = JSON.parse(raw || '{}') as Partial<AppSettings>;
         appSettings = {
             user_nickname: data.user_nickname ?? '小伙伴',
-            user_display_name: data.user_display_name ?? '你',
+            user_display_name: data.user_display_name ?? '主人',
             character_type: data.character_type ?? 'mao_pro_zh',
             character_name: data.character_name ?? 'Mao',
             personality: data.personality ?? ['温柔'],
             interaction_mode: data.interaction_mode ?? 'work',
-            proactive_mode: data.proactive_mode ?? 'quiet',
-            chat_model: data.chat_model ?? 'gpt',
+            proactive_mode: data.proactive_mode ?? 'greet',
             window_x: data.window_x ?? 100,
             window_y: data.window_y ?? 100,
             window_scale: data.window_scale ?? 1,
@@ -1191,9 +1188,7 @@ function syncCompanionSettingsForm() {
 
     const personalitySelect = document.getElementById('personality-select') as HTMLSelectElement | null;
     if (personalitySelect) {
-        Array.from(personalitySelect.options).forEach((option) => {
-            option.selected = appSettings.personality.includes(option.value);
-        });
+        personalitySelect.value = appSettings.personality[0] || '温柔';
     }
 
     const interactionModeSelect = document.getElementById('interaction-mode-select') as HTMLSelectElement | null;
@@ -1209,11 +1204,6 @@ function syncCompanionSettingsForm() {
     const userDisplayNameInput = document.getElementById('user-display-name-input') as HTMLInputElement | null;
     if (userDisplayNameInput) {
         userDisplayNameInput.value = appSettings.user_display_name;
-    }
-
-    const chatModelSelect = document.getElementById('chat-model-select') as HTMLSelectElement | null;
-    if (chatModelSelect) {
-        chatModelSelect.value = appSettings.chat_model;
     }
 
     const companionLimitNote = document.getElementById('companion-limit-note');
@@ -1387,15 +1377,8 @@ function bindCompanionSettingsForm() {
 
     const personalitySelect = document.getElementById('personality-select') as HTMLSelectElement | null;
     personalitySelect?.addEventListener('change', () => {
-        const selected = Array.from(personalitySelect.selectedOptions).map((item) => item.value);
-        appSettings.personality = selected.length > 0 ? selected : ['温柔'];
+        appSettings.personality = [personalitySelect.value || '温柔'];
         syncCompanionSettingsForm();
-        void saveAppSettings();
-    });
-
-    const chatModelSelect = document.getElementById('chat-model-select') as HTMLSelectElement | null;
-    chatModelSelect?.addEventListener('change', () => {
-        appSettings.chat_model = chatModelSelect.value;
         void saveAppSettings();
     });
 

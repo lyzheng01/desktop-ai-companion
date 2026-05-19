@@ -1122,16 +1122,10 @@
                     <input id="character-name-input" type="text" value="小艾" maxlength="20">
 
                     <label for="user-display-name-input">虚拟人如何称呼你</label>
-                    <input id="user-display-name-input" type="text" value="你" maxlength="20">
+                    <input id="user-display-name-input" type="text" value="主人" maxlength="20">
 
-                    <label for="chat-model-select">对话模型</label>
-                    <select id="chat-model-select">
-                        <option value="gpt">GPT</option>
-                        <option value="deepseek">DeepSeek</option>
-                    </select>
-
-                    <label for="personality-select">性格（可多选）</label>
-                    <select id="personality-select" multiple>
+                    <label for="personality-select">性格</label>
+                    <select id="personality-select">
                         <option value="温柔">温柔</option>
                         <option value="安静">安静</option>
                         <option value="元气">元气</option>
@@ -1150,7 +1144,7 @@
                     <label for="proactive-mode-select">你希望它平时主动吗？</label>
                     <select id="proactive-mode-select">
                         <option value="quiet">尽量安静，只有我叫它时再回应</option>
-                        <option value="greet">偶尔打个招呼</option>
+                        <option value="greet" selected>偶尔打个招呼</option>
                         <option value="remind">可以主动提醒我休息/睡觉</option>
                     </select>
                 </div>
