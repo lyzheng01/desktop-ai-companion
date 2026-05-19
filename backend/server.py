@@ -18,6 +18,12 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+DEFAULT_LLM_BASE_URL = "https://api.hanbbq.top/v1"
+DEFAULT_LLM_API_KEY = "sk-fe466420f529b88c208dc1c9bb6e52ba"
+DEFAULT_LLM_MODEL = "gpt-5.4"
+NON_STREAM_LLM_TIMEOUT = 180
+STREAM_LLM_TIMEOUT = 300
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -37,17 +43,11 @@ from app.config import (
     set_data_dir,
 )
 from app.db import (
-    clear_messages,
     create_companion,
     create_imported_model,
-    delete_memory,
     get_active_companion,
-    get_memories,
-    get_messages,
     list_imported_models,
     list_companions,
-    save_memory,
-    save_message,
     set_active_companion,
     update_companion,
 )
@@ -120,98 +120,98 @@ MODEL_CATALOG = [
         "key": "catalog-chino11",
         "name": "Chino11",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "chino11---chino11-model3---3",
-        "preview_path": "/model-previews/builtin/7.png",
+        "preview_path": "/model-previews/builtin/catalog-chino11.png",
         "builtin": False,
     },
     {
         "key": "catalog-epsilon",
         "name": "Epsilon",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "epsilon---epsilon-model3---1",
-        "preview_path": "/model-previews/builtin/8.png",
+        "preview_path": "/model-previews/builtin/catalog-epsilon.png",
         "builtin": False,
     },
     {
         "key": "catalog-haru-greeter",
         "name": "Haru Greeter",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "haru-greeter-pro-jp---haru-greeter-t05-model3---1",
-        "preview_path": "/model-previews/builtin/10.png",
+        "preview_path": "/model-previews/builtin/catalog-haru-greeter.png",
         "builtin": False,
     },
     {
         "key": "catalog-izumi",
         "name": "Izumi",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "izumi---izumi-illust-model3---1",
-        "preview_path": "/model-previews/builtin/11.png",
+        "preview_path": "/model-previews/builtin/catalog-izumi.png",
         "builtin": False,
     },
     {
         "key": "catalog-kitu17",
         "name": "KITU17",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "kitu17---kitu17-model3---1",
-        "preview_path": "/model-previews/builtin/12.png",
+        "preview_path": "/model-previews/builtin/catalog-kitu17.png",
         "builtin": False,
     },
     {
         "key": "catalog-neko",
         "name": "Neko",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "neko---neko--1-0-model3---1",
-        "preview_path": "/model-previews/builtin/13.png",
+        "preview_path": "/model-previews/builtin/catalog-neko.png",
         "builtin": False,
     },
     {
         "key": "catalog-nicole",
         "name": "Nicole",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "nicole---nicole-model3---1",
-        "preview_path": "/model-previews/builtin/14.png",
+        "preview_path": "/model-previews/builtin/catalog-nicole.png",
         "builtin": False,
     },
     {
         "key": "catalog-raiga",
         "name": "Raiga",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "raiga-free---raiga-model3---1",
-        "preview_path": "/model-previews/builtin/15.png",
+        "preview_path": "/model-previews/builtin/catalog-raiga.png",
         "builtin": False,
     },
     {
         "key": "catalog-toki",
         "name": "Toki",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "toki20220227---20220227toki-model3---1",
-        "preview_path": "/model-previews/builtin/17.png",
+        "preview_path": "/model-previews/builtin/catalog-toki.png",
         "builtin": False,
     },
     {
         "key": "catalog-hijiki",
         "name": "Hijiki",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "tororo-hijiki---hijiki-model3---1",
-        "preview_path": "/model-previews/builtin/18.png",
+        "preview_path": "/model-previews/builtin/catalog-hijiki.png",
         "builtin": False,
     },
     {
         "key": "catalog-tororo",
         "name": "Tororo",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "tororo-hijiki---tororo-model3---2",
-        "preview_path": "/model-previews/builtin/19.png",
+        "preview_path": "/model-previews/builtin/catalog-tororo.png",
         "builtin": False,
     },
     {
         "key": "catalog-wanderer",
         "name": "Wanderer",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "散兵-流浪者免费模型---散兵-model3---1",
-        "preview_path": "/model-previews/builtin/4.png",
+        "preview_path": "/model-previews/builtin/catalog-wanderer.png",
         "builtin": False,
     },
     {
         "key": "catalog-changli",
         "name": "Changli",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "长离带水印---长离-model3---1",
-        "preview_path": "/model-previews/builtin/22.png",
+        "preview_path": "/model-previews/builtin/catalog-changli.png",
         "builtin": False,
     },
     {
         "key": "catalog-witch",
         "name": "Witch",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "魔女---魔女-model3---1",
-        "preview_path": "/model-previews/builtin/23.png",
+        "preview_path": "/model-previews/builtin/catalog-witch.png",
         "builtin": False,
     },
 ]
@@ -290,12 +290,6 @@ def migrate_data_dir_contents(source: Path, target: Path) -> None:
             shutil.copy2(entry, destination)
 
 
-class MemoryCreateRequest(BaseModel):
-    content: str
-    category: str = "preference"
-    importance: int = 1
-
-
 class CompanionCreateRequest(BaseModel):
     name: str
     character_type: str
@@ -328,6 +322,7 @@ class Config(BaseModel):
     window_scale: float = 1.0
     character_scales: dict[str, float] = Field(default_factory=dict)
     api_provider: str = "default"
+    api_key: str = ""
     model_name: str = "default"
     auto_start: bool = False
     always_on_top: bool = False
@@ -361,6 +356,7 @@ class ConfigUpdate(BaseModel):
     window_scale: float | None = None
     character_scales: dict[str, float] | None = None
     api_provider: str | None = None
+    api_key: str | None = None
     model_name: str | None = None
     auto_start: bool | None = None
     always_on_top: bool | None = None
@@ -393,58 +389,15 @@ def to_api_config(current: AppConfig) -> Config:
     return Config.model_validate(config_data)
 
 
+def resolve_llm_settings(config: AppConfig) -> tuple[str, str, str]:
+    api_key = os.getenv("OPENAI_API_KEY", "").strip() or config.api_key.strip() or DEFAULT_LLM_API_KEY
+    base_url = DEFAULT_LLM_BASE_URL
+    model = DEFAULT_LLM_MODEL
+    return api_key, base_url, model
+
+
 def is_vip_user() -> bool:
     return False
-
-
-def extract_memory_candidates(message: str) -> list[dict]:
-    candidates = []
-    if "叫我" in message:
-        candidates.append(
-            {
-                "content": message.strip(),
-                "category": "preference",
-                "importance": 3,
-                "scope": "preference",
-            }
-        )
-    if any(token in message for token in ["最近在做", "最近在准备", "这周在做"]):
-        candidates.append(
-            {
-                "content": message.strip(),
-                "category": "project",
-                "importance": 2,
-                "scope": "short_term",
-            }
-        )
-    return candidates
-
-
-def persist_memory_candidates(candidates: list[dict]):
-    existing = {item["content"] for item in get_memories()}
-    for candidate in candidates:
-        if candidate["content"] in existing:
-            continue
-        save_memory(
-            candidate["content"],
-            category=candidate["category"],
-            importance=candidate["importance"],
-            scope=candidate["scope"],
-        )
-
-
-def build_memory_block(preference: list[dict], short_term: list[dict], long_term: list[dict]) -> str:
-    lines = []
-    if preference:
-        lines.append("稳定偏好：")
-        lines.extend(f"- {item['content']}" for item in preference[:3])
-    if short_term:
-        lines.append("近期情况：")
-        lines.extend(f"- {item['content']}" for item in short_term[:3])
-    if long_term:
-        lines.append("长期记忆：")
-        lines.extend(f"- {item['content']}" for item in long_term[:3])
-    return "\n".join(lines) if lines else "- 暂无额外记忆"
 
 
 def needs_live_search(message: str) -> bool:
@@ -456,24 +409,6 @@ def needs_live_search(message: str) -> bool:
     has_domain = any(token in message for token in domain_tokens)
     has_freshness = any(token in message for token in freshness_tokens)
     return has_domain and has_freshness
-
-
-def search_web(query: str) -> str:
-    normalized = query.strip()
-
-    if is_datetime_query(normalized):
-        return get_current_datetime_context(normalized)
-    if is_weather_query(normalized):
-        return search_weather(normalized)
-    if is_exchange_rate_query(normalized):
-        return search_exchange_rate(normalized)
-    if is_news_query(normalized):
-        return search_news(normalized)
-    return search_general_web(normalized)
-
-
-def build_search_context_block(query: str, search_result: str) -> str:
-    return f"外部检索结果（{query}）：\n{search_result.strip()}"
 
 
 def is_weather_query(message: str) -> bool:
@@ -508,6 +443,13 @@ def is_news_query(message: str) -> bool:
 
 
 def extract_weather_location(query: str) -> str:
+    normalized = re.sub(r"(今天|现在|最近|请问|一下|如何|怎么样|怎样|简短回答|回答|天气)", "", query)
+    normalized = re.sub(r"[，。！？、,.!?\\s]+", "", normalized)
+
+    city_match = re.search(r"([\u4e00-\u9fa5]{2,10})", normalized)
+    if city_match:
+        return city_match.group(1)
+
     city_match = re.search(r"([\u4e00-\u9fa5]{2,10}?)(?:今天|现在|最近)?(?:天气|气温|温度|会下雨)", query)
     if city_match:
         return city_match.group(1)
@@ -647,26 +589,6 @@ def build_proactive_weather_line(location: str = "合肥") -> str:
 
 
 def build_care_followup_line() -> str | None:
-    discomfort_tokens = ["不舒服", "难受", "头疼", "胃疼", "感冒", "发烧", "恶心", "疼", "不太舒服"]
-    yesterday = datetime.now().date().fromordinal(datetime.now().date().toordinal() - 1)
-    for item in reversed(get_messages(limit=200)):
-        if item.get("role") != "user":
-            continue
-        timestamp = item.get("timestamp")
-        if not timestamp:
-            continue
-        try:
-            message_day = datetime.fromisoformat(str(timestamp)).date()
-        except ValueError:
-            try:
-                message_day = datetime.strptime(str(timestamp), "%Y-%m-%d %H:%M:%S").date()
-            except ValueError:
-                continue
-        if message_day != yesterday:
-            continue
-        content = str(item.get("content") or "")
-        if any(token in content for token in discomfort_tokens):
-            return "昨天你好像有点不舒服，今天好一点了吗？"
     return None
 
 
@@ -813,26 +735,7 @@ def build_assistant_reply(
     )
 
 
-def build_live_tool_reply(message: str, tool_result: str, config: AppConfig) -> str:
-    cleaned = tool_result.strip()
-
-    if is_datetime_query(message):
-        return shape_companion_reply(message, cleaned, config)
-
-    if is_weather_query(message):
-        return shape_companion_reply(message, cleaned, config)
-
-    if is_exchange_rate_query(message):
-        return shape_companion_reply(message, cleaned, config)
-
-    if is_news_query(message):
-        return shape_companion_reply(message, cleaned, config)
-
-    search_context_block = build_search_context_block(message, cleaned)
-    return build_assistant_reply(message, [], config, search_context_block=search_context_block)
-
-
-def build_companion_system_prompt(config: AppConfig, memory_block: str) -> str:
+def build_companion_system_prompt(config: AppConfig) -> str:
     companion_name = config.character_name.strip() or "小艾"
     user_name = config.user_display_name.strip() or config.user_nickname.strip() or "你"
     personality = "、".join(config.personality[:4]) if config.personality else "温柔"
@@ -843,24 +746,14 @@ def build_companion_system_prompt(config: AppConfig, memory_block: str) -> str:
         "回复简短、温柔、有一点陪伴感，不要像客服，不要长篇大论。"
         f"当用户问你叫什么、你的名字、你是谁时，要明确回答你叫{companion_name}。"
         "不要说自己没有名字。"
-        "\n你已知的用户信息：\n"
-        f"{memory_block or '- 暂无额外记忆'}"
     )
 
 
-def build_memory_prompt_block() -> str:
-    preference = get_memories(scope="preference")
-    short_term = get_memories(scope="short_term")
-    long_term = get_memories(scope="long_term")
-    return build_memory_block(preference, short_term, long_term)
-
-
 def build_chat_messages(config: AppConfig, message: str, context: list[ChatMessage], search_context_block: str | None = None) -> list[dict]:
-    memory_block = build_memory_prompt_block()
     return [
         {
             "role": "system",
-            "content": build_companion_system_prompt(config, memory_block)
+            "content": build_companion_system_prompt(config)
             + (f"\n\n{search_context_block}" if search_context_block else ""),
         },
         *[
@@ -892,6 +785,32 @@ def extract_stream_delta(payload: dict) -> str:
     return ""
 
 
+def extract_response_output_text(payload: dict) -> str:
+    output_text = str(payload.get("output_text") or "").strip()
+    if output_text:
+        return output_text
+
+    output = payload.get("output")
+    if not isinstance(output, list):
+        return ""
+
+    parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            text = str(block.get("text") or "").strip()
+            if text:
+                parts.append(text)
+
+    return "".join(parts).strip()
+
+
 def iter_upstream_sse_lines(response: httpx.Response):
     for line in response.iter_lines():
         if not line:
@@ -913,9 +832,7 @@ def iter_upstream_sse_lines(response: httpx.Response):
 
 
 def generate_native_live_response(message: str, context: list[ChatMessage], config: AppConfig) -> str | None:
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    base_url = os.getenv("OPENAI_BASE_URL", "https://api.hanbbq.top/v1").rstrip("/")
-    model = os.getenv("OPENAI_MODEL", "gpt-5.4").strip()
+    api_key, base_url, model = resolve_llm_settings(config)
 
     if not api_key:
         return None
@@ -933,11 +850,11 @@ def generate_native_live_response(message: str, context: list[ChatMessage], conf
             f"{base_url}/responses",
             headers={"Authorization": f"Bearer {api_key}"},
             json=payload,
-            timeout=30,
+            timeout=NON_STREAM_LLM_TIMEOUT,
         )
         response.raise_for_status()
         data = response.json()
-        output_text = (data.get("output_text") or "").strip()
+        output_text = extract_response_output_text(data)
         if output_text:
             return shape_companion_reply(message, output_text, config)
     except Exception:
@@ -947,9 +864,7 @@ def generate_native_live_response(message: str, context: list[ChatMessage], conf
 
 
 def iter_native_live_response_stream(message: str, context: list[ChatMessage], config: AppConfig):
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    base_url = os.getenv("OPENAI_BASE_URL", "https://api.hanbbq.top/v1").rstrip("/")
-    model = os.getenv("OPENAI_MODEL", "gpt-5.4").strip()
+    api_key, base_url, model = resolve_llm_settings(config)
 
     if not api_key:
         return
@@ -966,16 +881,14 @@ def iter_native_live_response_stream(message: str, context: list[ChatMessage], c
         f"{base_url}/responses",
         headers={"Authorization": f"Bearer {api_key}"},
         json=payload,
-        timeout=60,
+        timeout=STREAM_LLM_TIMEOUT,
     ) as response:
         response.raise_for_status()
         yield from iter_upstream_sse_lines(response)
 
 
 def iter_chat_response_stream(message: str, context: list[ChatMessage], config: AppConfig, search_context_block: str | None = None):
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    base_url = os.getenv("OPENAI_BASE_URL", "https://api.hanbbq.top/v1").rstrip("/")
-    model = os.getenv("OPENAI_MODEL", "gpt-5.4").strip()
+    api_key, base_url, model = resolve_llm_settings(config)
 
     if not api_key:
         return
@@ -992,7 +905,7 @@ def iter_chat_response_stream(message: str, context: list[ChatMessage], config: 
         f"{base_url}/chat/completions",
         headers={"Authorization": f"Bearer {api_key}"},
         json=payload,
-        timeout=60,
+        timeout=STREAM_LLM_TIMEOUT,
     ) as response:
         response.raise_for_status()
         yield from iter_upstream_sse_lines(response)
@@ -1002,9 +915,7 @@ def resolve_live_response(message: str, context: list[ChatMessage], config: AppC
     native_live_response = generate_native_live_response(message, context, config)
     if native_live_response:
         return native_live_response
-
-    search_result = search_web(message)
-    return build_live_tool_reply(message, search_result, config)
+    raise ValueError("Native live response unavailable")
 
 
 def stream_native_live_response(message: str, context: list[ChatMessage], config: AppConfig):
@@ -1025,7 +936,6 @@ def stream_native_live_response(message: str, context: list[ChatMessage], config
         raise ValueError("No streamed live response received")
 
     final_reply = shape_companion_reply(message, final_text, config)
-    save_message("assistant", final_reply)
     yield sse_event("done", "done")
 
 
@@ -1045,7 +955,6 @@ def stream_chat_response(message: str, context: list[ChatMessage], config: AppCo
         raise ValueError("No streamed chat response received")
 
     final_reply = shape_companion_reply(message, final_text, config)
-    save_message("assistant", final_reply)
     yield sse_event("done", "done")
 
 
@@ -1055,7 +964,6 @@ def safe_stream_chat_response(message: str, context: list[ChatMessage], config: 
         return
     except Exception:
         response_content = build_assistant_reply(message, context, config)
-        save_message("assistant", response_content)
         yield sse_event("assistant_delta", response_content)
         yield sse_event("done", "done")
 
@@ -1065,15 +973,7 @@ def safe_stream_native_live_response(message: str, context: list[ChatMessage], c
         yield from stream_native_live_response(message, context, config)
         return
     except Exception:
-        try:
-            response_content = resolve_live_response(message, context, config)
-        except Exception:
-            response_content = "抱歉，我暂时没能查到最新信息，所以现在不想乱说。你可以稍后再让我查一次。"
-
-        save_message("assistant", response_content)
-        yield sse_event("phase", "searching")
-        yield sse_event("assistant_delta", response_content)
-        yield sse_event("done", "done")
+        yield from safe_stream_chat_response(message, context, config)
 
 # ============== FastAPI 应用 ==============
 
@@ -1111,8 +1011,7 @@ async def proactive_weather(location: str = "合肥"):
 
 @app.get("/proactive/followup", response_model=ProactiveMessageResponse)
 async def proactive_followup():
-    line = build_care_followup_line()
-    return ProactiveMessageResponse(trigger="care_followup", content=line or "")
+    return ProactiveMessageResponse(trigger="care_followup", content="")
 
 
 @app.get("/data-dir", response_model=DataDirResponse)
@@ -1141,46 +1040,23 @@ async def chat(request: ChatRequest):
     - message: 用户消息
     - context: 历史消息 (最近 10 条)
     """
-    save_message("user", request.message)
-
-    candidates = extract_memory_candidates(request.message)
-    persist_memory_candidates(candidates)
-
     current = apply_active_companion(get_config())
 
-    if needs_live_search(request.message):
-        try:
-            response_content = resolve_live_response(request.message, request.context, current)
-            save_message("assistant", response_content)
-            return ChatResponse(content=response_content)
-        except Exception:
-            response_content = "抱歉，我暂时没能查到最新信息，所以现在不想乱说。你可以稍后再让我查一次。"
-            save_message("assistant", response_content)
-            return ChatResponse(content=response_content)
+    try:
+        response_content = resolve_live_response(request.message, request.context, current)
+        return ChatResponse(content=response_content)
+    except Exception:
+        pass
 
     response_content = build_assistant_reply(request.message, request.context, current)
-
-    save_message("assistant", response_content)
-
     return ChatResponse(content=response_content)
 
 
 @app.post("/chat/stream")
 async def chat_stream(request: ChatRequest):
-    save_message("user", request.message)
-
-    candidates = extract_memory_candidates(request.message)
-    persist_memory_candidates(candidates)
-
     current = apply_active_companion(get_config())
-    if needs_live_search(request.message):
-        return StreamingResponse(
-            safe_stream_native_live_response(request.message, request.context, current),
-            media_type="text/event-stream",
-        )
-
     return StreamingResponse(
-        safe_stream_chat_response(request.message, request.context, current),
+        safe_stream_native_live_response(request.message, request.context, current),
         media_type="text/event-stream",
     )
 
@@ -1302,37 +1178,6 @@ async def save_config_endpoint(config: ConfigUpdate):
     persist_config(current)
     return to_api_config(current)
 
-@app.get("/history")
-async def get_history(limit: int = 50):
-    """获取聊天记录"""
-    return get_messages(limit=limit)
-
-@app.delete("/history")
-async def clear_history():
-    """清空聊天记录"""
-    clear_messages()
-    return {"status": "ok"}
-
-
-@app.get("/memory")
-async def list_memory():
-    """获取轻量记忆"""
-    return get_memories()
-
-
-@app.post("/memory")
-async def create_memory(payload: MemoryCreateRequest):
-    """创建轻量记忆"""
-    save_memory(payload.content, payload.category, payload.importance)
-    return {"status": "ok"}
-
-
-@app.delete("/memory/{memory_id}")
-async def remove_memory(memory_id: int):
-    """删除轻量记忆"""
-    delete_memory(memory_id)
-    return {"status": "ok"}
-
 # ============== 占位回复生成 ==============
 
 def shape_companion_reply(message: str, raw_reply: str, config: AppConfig) -> str:
@@ -1351,9 +1196,7 @@ def generate_chat_response(
     config: AppConfig,
     search_context_block: str | None = None,
 ) -> str:
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
-    base_url = os.getenv("OPENAI_BASE_URL", "https://api.hanbbq.top/v1").rstrip("/")
-    model = os.getenv("OPENAI_MODEL", "gpt-5.4").strip()
+    api_key, base_url, model = resolve_llm_settings(config)
 
     if not api_key:
         return generate_fallback_response(message)
@@ -1363,7 +1206,7 @@ def generate_chat_response(
         "messages": [
             {
                 "role": "system",
-                "content": build_companion_system_prompt(config, build_memory_prompt_block())
+                "content": build_companion_system_prompt(config)
                 + (f"\n\n{search_context_block}" if search_context_block else ""),
             },
             *[
@@ -1380,7 +1223,7 @@ def generate_chat_response(
             f"{base_url}/chat/completions",
             headers={"Authorization": f"Bearer {api_key}"},
             json=payload,
-            timeout=20,
+            timeout=NON_STREAM_LLM_TIMEOUT,
         )
         response.raise_for_status()
         data = response.json()
