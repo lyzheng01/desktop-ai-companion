@@ -3297,8 +3297,15 @@ let contextMenuVisible = false;
 function showContextMenu(x: number, y: number) {
     const menu = document.getElementById('context-menu');
     if (menu) {
-        menu.style.left = x + 'px';
-        menu.style.top = y + 'px';
+        menu.classList.add('visible');
+        const menuRect = menu.getBoundingClientRect();
+        const padding = 8;
+        const maxLeft = Math.max(padding, window.innerWidth - menuRect.width - padding);
+        const maxTop = Math.max(padding, window.innerHeight - menuRect.height - padding);
+        const nextLeft = Math.min(Math.max(x, padding), maxLeft);
+        const nextTop = Math.min(Math.max(y, padding), maxTop);
+        menu.style.left = `${nextLeft}px`;
+        menu.style.top = `${nextTop}px`;
         menu.classList.add('visible');
         contextMenuVisible = true;
     }
