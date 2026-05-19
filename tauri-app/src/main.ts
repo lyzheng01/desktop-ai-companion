@@ -1558,8 +1558,16 @@ function getScaledWindowSize(scale: number) {
 }
 
 function applyScaledViewport() {
+    const container = document.getElementById('character-container');
+    if (container) {
+        const { width, height } = getScaledWindowSize(currentScale);
+        container.style.width = `${width}px`;
+        container.style.height = `${height}px`;
+    }
+
     if (app) {
-        app.renderer.resize(BASE_WINDOW_WIDTH, BASE_WINDOW_HEIGHT);
+        const { width, height } = getScaledWindowSize(currentScale);
+        app.renderer.resize(width, height);
     }
 }
 
@@ -1608,6 +1616,13 @@ async function setScale(scale: number, persist = true) {
     }
 
     applyCurrentScale();
+
+    const { width, height } = getScaledWindowSize(currentScale);
+    try {
+        await getCurrentWindow().setSize(new LogicalSize(width, height));
+    } catch (error) {
+        console.debug('Window resize failed.', error);
+    }
 
     if (persist) {
         void saveAppSettings();
@@ -2753,45 +2768,14 @@ function closeSettingsPanel() {
     }
 }
 
-function bindDraggablePanel(panelSelector: string, handleSelector?: string) {
-    const panel = document.querySelector<HTMLElement>(panelSelector);
-    const handle = handleSelector ? document.querySelector<HTMLElement>(handleSelector) : panel;
-    if (!panel || !handle) return;
-
-    let dragging = false;
-    let startX = 0;
-    let startY = 0;
-    let originLeft = 0;
-    let originTop = 0;
-
-    const onMove = (event: PointerEvent) => {
-        if (!dragging) return;
-        const nextLeft = originLeft + (event.clientX - startX);
-        const nextTop = originTop + (event.clientY - startY);
-        panel.style.left = `${nextLeft}px`;
-        panel.style.top = `${nextTop}px`;
-        panel.style.right = 'auto';
-        panel.style.bottom = 'auto';
-    };
-
-    const stopDragging = () => {
-        dragging = false;
-        window.removeEventListener('pointermove', onMove);
-        window.removeEventListener('pointerup', stopDragging);
-    };
+function bindStandaloneWindowDrag(handleSelector: string) {
+    const handle = document.querySelector<HTMLElement>(handleSelector);
+    if (!handle) return;
 
     handle.addEventListener('pointerdown', (event) => {
         if (event.button !== 0) return;
         if ((event.target as HTMLElement).closest('button, input, textarea, select, option, label, a')) return;
-
-        dragging = true;
-        startX = event.clientX;
-        startY = event.clientY;
-        const rect = panel.getBoundingClientRect();
-        originLeft = rect.left;
-        originTop = rect.top;
-        window.addEventListener('pointermove', onMove);
-        window.addEventListener('pointerup', stopDragging);
+        void getCurrentWindow().startDragging();
     });
 }
 
@@ -3222,7 +3206,7 @@ async function initializeStandaloneChatWindow() {
         await getCurrentWindow().setFocus();
     });
 
-    bindDraggablePanel('#chat-window', '.chat-header');
+    bindStandaloneWindowDrag('.chat-header');
 }
 
 async function initializeStandaloneSettingsWindow() {
@@ -3254,7 +3238,7 @@ async function initializeStandaloneSettingsWindow() {
         updateScaleControls();
     });
 
-    bindDraggablePanel('#settings-panel', '.settings-header');
+    bindStandaloneWindowDrag('.settings-header');
 }
 
 async function initializeStandaloneModelWindow() {
@@ -3283,7 +3267,7 @@ async function initializeStandaloneModelWindow() {
         await refreshModelPanel();
     });
 
-    bindDraggablePanel('#model-panel', '.settings-header');
+    bindStandaloneWindowDrag('.settings-header');
 }
 
 async function promptImportModel() {
