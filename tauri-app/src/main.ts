@@ -2768,8 +2768,9 @@ function closeSettingsPanel() {
     }
 }
 
-function bindStandaloneWindowDrag(handleSelector: string) {
-    const handle = document.querySelector<HTMLElement>(handleSelector);
+function bindStandaloneWindowDrag(handleSelector: string, rootSelector?: string) {
+    const root = rootSelector ? document.querySelector<HTMLElement>(rootSelector) : document;
+    const handle = root?.querySelector<HTMLElement>(handleSelector) ?? null;
     if (!handle) return;
 
     handle.addEventListener('pointerdown', (event) => {
@@ -3206,7 +3207,7 @@ async function initializeStandaloneChatWindow() {
         await getCurrentWindow().setFocus();
     });
 
-    bindStandaloneWindowDrag('.chat-header');
+    bindStandaloneWindowDrag('.chat-header', '#chat-window');
 }
 
 async function initializeStandaloneSettingsWindow() {
@@ -3238,7 +3239,7 @@ async function initializeStandaloneSettingsWindow() {
         updateScaleControls();
     });
 
-    bindStandaloneWindowDrag('.settings-header');
+    bindStandaloneWindowDrag('.settings-header', '#settings-panel');
 }
 
 async function initializeStandaloneModelWindow() {
@@ -3267,7 +3268,7 @@ async function initializeStandaloneModelWindow() {
         await refreshModelPanel();
     });
 
-    bindStandaloneWindowDrag('.settings-header');
+    bindStandaloneWindowDrag('.settings-header', '#model-panel');
 }
 
 async function promptImportModel() {
