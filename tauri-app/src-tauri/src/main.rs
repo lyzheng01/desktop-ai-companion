@@ -119,7 +119,29 @@ fn transcribe_audio_file(path: String) -> Result<String, String> {
         return Err("audio file not found".to_string());
     }
 
-    Ok("[语音识别占位结果]".to_string())
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .ok_or_else(|| "failed to resolve repo root".to_string())?
+        .to_path_buf();
+    let script_path = repo_root.join("tools").join("transcribe_local_audio.py");
+    if !script_path.exists() {
+        return Err(format!("transcribe script not found: {}", script_path.display()));
+    }
+
+    let output = Command::new("python")
+        .current_dir(&repo_root)
+        .arg(&script_path)
+        .arg(&audio_path)
+        .output()
+        .map_err(|err| format!("failed to launch local transcription: {err}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if stderr.is_empty() { "local transcription failed".to_string() } else { stderr });
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn resolve_frontend_memory_file_path(app: &AppHandle) -> Result<PathBuf, String> {
