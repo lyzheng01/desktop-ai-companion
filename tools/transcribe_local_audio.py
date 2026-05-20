@@ -20,15 +20,16 @@ def normalize_transcribed_text(text: str) -> str:
 
 def main() -> None:
     if len(sys.argv) < 2:
-        raise SystemExit('usage: python tools/transcribe_local_audio.py <wav-path>')
+        raise SystemExit('usage: python tools/transcribe_local_audio.py <wav-path> [model-dir]')
 
     wav_path = Path(sys.argv[1])
+    model_dir = Path(sys.argv[2]) if len(sys.argv) > 2 else MODEL_DIR
     if not wav_path.exists():
         raise SystemExit('audio file not found')
-    if not MODEL_DIR.exists():
-        raise SystemExit(f'model dir not found: {MODEL_DIR}')
+    if not model_dir.exists():
+        raise SystemExit(f'model dir not found: {model_dir}')
 
-    model = Model(str(MODEL_DIR))
+    model = Model(str(model_dir))
     with wave.open(str(wav_path), 'rb') as wf:
         recognizer = KaldiRecognizer(model, wf.getframerate())
         recognizer.SetWords(False)

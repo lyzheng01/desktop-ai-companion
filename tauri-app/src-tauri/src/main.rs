@@ -113,27 +113,31 @@ fn save_temp_audio_file(payload: Vec<u8>, extension: String) -> Result<String, S
 }
 
 #[tauri::command]
-fn transcribe_audio_file(path: String) -> Result<String, String> {
+fn transcribe_audio_file(app: AppHandle, path: String) -> Result<String, String> {
     let audio_path = PathBuf::from(path);
     if !audio_path.exists() {
         return Err("audio file not found".to_string());
     }
 
-    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .ok_or_else(|| "failed to resolve repo root".to_string())?
-        .to_path_buf();
-    let script_path = repo_root.join("tools").join("transcribe_local_audio.py");
+    let resource_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|err| format!("failed to resolve resource dir: {err}"))?;
+    let script_path = resource_dir.join("transcribe_local_audio.py");
+    let model_dir = resource_dir.join("speech-models").join("vosk-model-small-cn-0.22");
     if !script_path.exists() {
         return Err(format!("transcribe script not found: {}", script_path.display()));
     }
+    if !model_dir.exists() {
+        return Err(format!("speech model dir not found: {}", model_dir.display()));
+    }
 
     let output = Command::new("python")
-        .current_dir(&repo_root)
+        .current_dir(&resource_dir)
         .env("PYTHONIOENCODING", "utf-8")
         .arg(&script_path)
         .arg(&audio_path)
+        .arg(&model_dir)
         .output()
         .map_err(|err| format!("failed to launch local transcription: {err}"))?;
 
@@ -283,9 +287,14 @@ fn main() {
             let show_item = MenuItem::with_id(app, "show", "显示", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let tray_icon = app
+                .default_window_icon()
+                .cloned()
+                .ok_or_else(|| "default tray icon is not available".to_string())?;
 
             let app_handle = app.handle().clone();
             TrayIconBuilder::with_id("main-tray")
+                .icon(tray_icon)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_tray_icon_event(move |_tray, event| {
