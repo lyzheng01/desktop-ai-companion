@@ -81,7 +81,7 @@ def write_meta_json(pack_id: str, pack_name: str, pack_dir: Path) -> None:
     meta = {
         'id': pack_id,
         'name': pack_name,
-        'phrases': PHRASES,
+        'phrases': {text: file_name for file_name, text in PHRASES.items()},
     }
     (pack_dir / 'meta.json').write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding='utf-8')
 
