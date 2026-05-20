@@ -1433,6 +1433,13 @@ function bindCompanionSettingsForm() {
     voiceEnabledInput?.addEventListener('change', () => {
         appSettings.voice_enabled = voiceEnabledInput.checked;
         voiceManager.setEnabled(appSettings.voice_enabled);
+        if (isSettingsStandaloneWindow()) {
+            void getCurrentWebviewWindow().emitTo('main', 'voice-settings-requested', {
+                voice_enabled: appSettings.voice_enabled,
+                voice_pack: appSettings.voice_pack,
+                voice_auto_play_mode: appSettings.voice_auto_play_mode,
+            });
+        }
         void saveAppSettings();
     });
 
@@ -1442,12 +1449,26 @@ function bindCompanionSettingsForm() {
         if (appSettings.voice_enabled) {
             await voiceManager.setVoicePack(appSettings.voice_pack);
         }
+        if (isSettingsStandaloneWindow()) {
+            await getCurrentWebviewWindow().emitTo('main', 'voice-settings-requested', {
+                voice_enabled: appSettings.voice_enabled,
+                voice_pack: appSettings.voice_pack,
+                voice_auto_play_mode: appSettings.voice_auto_play_mode,
+            });
+        }
         void saveAppSettings();
     });
 
     const voiceAutoPlayModeSelect = document.getElementById('voice-auto-play-mode-select') as HTMLSelectElement | null;
     voiceAutoPlayModeSelect?.addEventListener('change', () => {
         appSettings.voice_auto_play_mode = voiceAutoPlayModeSelect.value as VoiceAutoPlayMode;
+        if (isSettingsStandaloneWindow()) {
+            void getCurrentWebviewWindow().emitTo('main', 'voice-settings-requested', {
+                voice_enabled: appSettings.voice_enabled,
+                voice_pack: appSettings.voice_pack,
+                voice_auto_play_mode: appSettings.voice_auto_play_mode,
+            });
+        }
         void saveAppSettings();
     });
 
@@ -3334,6 +3355,23 @@ async function initializeStandaloneSettingsWindow() {
         currentScale = nextScale;
         updateScaleControls();
     });
+    await getCurrentWebviewWindow().listen<{
+        voice_enabled?: boolean;
+        voice_pack?: string;
+        voice_auto_play_mode?: VoiceAutoPlayMode;
+    }>('voice-settings-updated', async (event) => {
+        const payload = event.payload || {};
+        if (typeof payload.voice_enabled === 'boolean') {
+            appSettings.voice_enabled = payload.voice_enabled;
+        }
+        if (typeof payload.voice_pack === 'string' && payload.voice_pack.trim()) {
+            appSettings.voice_pack = payload.voice_pack;
+        }
+        if (payload.voice_auto_play_mode === 'off' || payload.voice_auto_play_mode === 'phrases-only' || payload.voice_auto_play_mode === 'all') {
+            appSettings.voice_auto_play_mode = payload.voice_auto_play_mode;
+        }
+        syncCompanionSettingsForm();
+    });
 
     bindStandaloneWindowDrag('.settings-header', '#settings-panel');
 }
@@ -3675,6 +3713,36 @@ window.addEventListener('DOMContentLoaded', async () => {
             }
             await setScale(nextScale, event.payload?.persist !== false);
             await getCurrentWebviewWindow().emitTo('settings', 'scale-updated', { scale: currentScale });
+        });
+        await getCurrentWebviewWindow().listen<{
+            voice_enabled?: boolean;
+            voice_pack?: string;
+            voice_auto_play_mode?: VoiceAutoPlayMode;
+        }>('voice-settings-requested', async (event) => {
+            const payload = event.payload || {};
+            if (typeof payload.voice_enabled === 'boolean') {
+                appSettings.voice_enabled = payload.voice_enabled;
+            }
+            if (typeof payload.voice_pack === 'string' && payload.voice_pack.trim()) {
+                appSettings.voice_pack = payload.voice_pack;
+            }
+            if (payload.voice_auto_play_mode === 'off' || payload.voice_auto_play_mode === 'phrases-only' || payload.voice_auto_play_mode === 'all') {
+                appSettings.voice_auto_play_mode = payload.voice_auto_play_mode;
+            }
+
+            voiceManager.setEnabled(appSettings.voice_enabled);
+            if (appSettings.voice_enabled) {
+                await voiceManager.setVoicePack(appSettings.voice_pack);
+            } else {
+                voiceManager.stop();
+            }
+
+            await saveAppSettings();
+            await getCurrentWebviewWindow().emitTo('settings', 'voice-settings-updated', {
+                voice_enabled: appSettings.voice_enabled,
+                voice_pack: appSettings.voice_pack,
+                voice_auto_play_mode: appSettings.voice_auto_play_mode,
+            });
         });
         if (firstRunRequired) {
             showFirstRunPanel();
