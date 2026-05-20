@@ -5,6 +5,7 @@ export class VoiceManager {
   private meta: VoicePackMeta | null = null
   private currentAudio: HTMLAudioElement | null = null
   private enabled = true
+  private unlocked = false
 
   setEnabled(enabled: boolean) {
     this.enabled = enabled
@@ -46,6 +47,22 @@ export class VoiceManager {
     this.currentAudio = null
   }
 
+  async unlock(): Promise<void> {
+    if (this.unlocked) return
+
+    try {
+      const audio = new Audio()
+      audio.muted = true
+      audio.src = 'data:audio/mp3;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAASW5mbwAAAA8AAAACAAACcQCA' 
+      await audio.play()
+      audio.pause()
+      audio.currentTime = 0
+      this.unlocked = true
+    } catch (error) {
+      console.warn('Voice unlock failed:', error)
+    }
+  }
+
   hasPhrase(text: string): boolean {
     if (!this.meta) return false
     return Boolean(this.meta.phrases[text])
@@ -54,6 +71,7 @@ export class VoiceManager {
   async playPhrase(text: string): Promise<boolean> {
     if (!this.enabled) return false
     if (!this.meta || !this.currentVoicePack) return false
+    if (!this.unlocked) return false
 
     const fileName = this.meta.phrases[text]
     if (!fileName) return false

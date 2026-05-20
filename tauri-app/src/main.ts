@@ -1587,11 +1587,11 @@ function getBubbleLineForRegion(region: CharacterRegion) {
 
 async function handleCompanionSingleClick(region: CharacterRegion) {
     const bubbleLine = getBubbleLineForRegion(region);
+    if (appSettings.voice_enabled) {
+        void voiceManager.unlock().then(() => voiceManager.playPhrase(bubbleLine));
+    }
     window.setTimeout(() => {
         showReactionBubble(bubbleLine);
-        if (appSettings.voice_enabled) {
-            void voiceManager.playPhrase(bubbleLine);
-        }
     }, 180);
     await triggerRegionReaction(region);
 }
