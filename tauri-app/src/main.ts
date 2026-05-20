@@ -3101,12 +3101,16 @@ function bindSpeechInputButton() {
                 if (text.trim()) {
                     input.value = text.trim();
                     input.focus();
+                } else {
+                    window.alert('没有识别到有效语音，请再说一次。');
                 }
             }
         } catch (error) {
             console.error('Speech input failed.', error);
             speechRecordingState = 'idle';
             updateSpeechInputButton();
+            const message = error instanceof Error ? error.message : String(error);
+            window.alert(`本地语音识别失败：${message}`);
         }
     });
 }
