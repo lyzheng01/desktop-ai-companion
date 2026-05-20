@@ -33,6 +33,10 @@ type AppSettings = {
     window_y: number;
     window_scale: number;
     character_scales: Record<string, number>;
+    chat_window_width: number;
+    chat_window_height: number;
+    chat_window_x: number;
+    chat_window_y: number;
 };
 
 type DataDirInfo = {
@@ -257,6 +261,10 @@ let appSettings: AppSettings = {
     window_y: 100,
     window_scale: 1,
     character_scales: {},
+    chat_window_width: 380,
+    chat_window_height: 500,
+    chat_window_x: 0,
+    chat_window_y: 0,
 };
 const live2dDebugState = {
     currentCharacter,
@@ -551,6 +559,10 @@ async function loadAppSettings(options: {
             window_y: data.window_y ?? 100,
             window_scale: data.window_scale ?? 1,
             character_scales: data.character_scales ?? {},
+            chat_window_width: data.chat_window_width ?? 380,
+            chat_window_height: data.chat_window_height ?? 500,
+            chat_window_x: data.chat_window_x ?? 0,
+            chat_window_y: data.chat_window_y ?? 0,
         };
 
         voiceManager.setEnabled(appSettings.voice_enabled);
@@ -595,6 +607,46 @@ function updateChatTitle() {
     const title = document.getElementById('chat-title');
     if (title) {
         title.textContent = appSettings.character_name;
+    }
+}
+
+async function restoreChatWindowBounds() {
+    if (!isChatStandaloneWindow()) {
+        return;
+    }
+
+    try {
+        await getCurrentWindow().setSize(new LogicalSize(appSettings.chat_window_width, appSettings.chat_window_height));
+    } catch (error) {
+        console.debug('Chat window size restore failed.', error);
+    }
+
+    if (appSettings.chat_window_x === 0 && appSettings.chat_window_y === 0) {
+        return;
+    }
+
+    try {
+        await getCurrentWindow().setPosition(new PhysicalPosition(appSettings.chat_window_x, appSettings.chat_window_y));
+    } catch (error) {
+        console.debug('Chat window position restore failed.', error);
+    }
+}
+
+async function persistChatWindowBounds() {
+    if (!isChatStandaloneWindow()) {
+        return;
+    }
+
+    try {
+        const size = await getCurrentWindow().innerSize();
+        const position = await getCurrentWindow().outerPosition();
+        appSettings.chat_window_width = size.width;
+        appSettings.chat_window_height = size.height;
+        appSettings.chat_window_x = position.x;
+        appSettings.chat_window_y = position.y;
+        await saveAppSettings();
+    } catch (error) {
+        console.debug('Chat window bounds save failed.', error);
     }
 }
 
@@ -3399,6 +3451,8 @@ async function initializeStandaloneChatWindow() {
         chatWindowVisible = true;
     }
 
+    await restoreChatWindowBounds();
+
     try {
         await ensureChatHistoryLoaded();
     } catch (error) {
@@ -3416,9 +3470,16 @@ async function initializeStandaloneChatWindow() {
         chatWindowVisible = true;
         await getCurrentWindow().show();
         await getCurrentWindow().setFocus();
+        await persistChatWindowBounds();
     });
 
     bindStandaloneWindowDrag('.chat-header', '#chat-window');
+    await getCurrentWindow().onResized(async () => {
+        await persistChatWindowBounds();
+    });
+    await getCurrentWindow().onMoved(async () => {
+        await persistChatWindowBounds();
+    });
 }
 
 async function initializeStandaloneSettingsWindow() {
