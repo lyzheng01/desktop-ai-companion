@@ -2372,6 +2372,16 @@ declare global {
             triggerProactiveBubble: (trigger: ProactiveTriggerType, text: string) => Promise<void>;
             fitCurrentModelForPreview: () => boolean;
             getCurrentModelPreviewBounds: () => { x: number; y: number; width: number; height: number } | null;
+            switchCharacter: (modelKey: string) => void;
+            switchCharacterAndWait: (modelKey: string) => Promise<boolean>;
+            openChat: () => Promise<void>;
+            closeChat: () => void;
+            openSettings: () => void;
+            openModelPanel: () => void;
+            sendChatMessage: (text: string) => Promise<void>;
+            showBubble: (text: string) => void;
+            triggerRegionReaction: (region: CharacterRegion) => Promise<void>;
+            triggerHiyoriAction: (action: HiyoriAction) => void;
         };
     }
 }
@@ -2430,6 +2440,41 @@ window.__desktopCompanionDebug = {
             width: bounds.width,
             height: bounds.height,
         };
+    },
+    switchCharacter: (modelKey: string) => {
+        switchCharacter(modelKey);
+    },
+    switchCharacterAndWait: async (modelKey: string) => {
+        return await switchCharacterAndWait(modelKey);
+    },
+    openChat: async () => {
+        await openChat();
+    },
+    closeChat: () => {
+        closeChat();
+    },
+    openSettings: () => {
+        showSettings();
+    },
+    openModelPanel: () => {
+        openModelPanel();
+    },
+    sendChatMessage: async (text: string) => {
+        const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+        if (!input) {
+            return;
+        }
+        input.value = text;
+        await sendMessage();
+    },
+    showBubble: (text: string) => {
+        showReactionBubble(text);
+    },
+    triggerRegionReaction: async (region: CharacterRegion) => {
+        await triggerRegionReaction(region);
+    },
+    triggerHiyoriAction: (action: HiyoriAction) => {
+        triggerHiyoriAction(action);
     },
 };
 live2dDebugState.hiyoriActions = Object.fromEntries(
@@ -3313,6 +3358,20 @@ function switchCharacter(name: string) {
     currentCharacter = name;
     void loadLive2DModel();
     void saveAppSettings();
+}
+
+async function switchCharacterAndWait(name: string) {
+    console.log('🎭 切换角色并等待加载:', name);
+    hideContextMenu();
+    if (!live2dModels[name]) {
+        console.warn('Unknown Live2D character:', name);
+        return false;
+    }
+
+    currentCharacter = name;
+    await loadLive2DModel();
+    void saveAppSettings();
+    return true;
 }
 
 function bindContextMenuActions() {
