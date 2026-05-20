@@ -131,6 +131,7 @@ fn transcribe_audio_file(path: String) -> Result<String, String> {
 
     let output = Command::new("python")
         .current_dir(&repo_root)
+        .env("PYTHONIOENCODING", "utf-8")
         .arg(&script_path)
         .arg(&audio_path)
         .output()

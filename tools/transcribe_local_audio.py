@@ -33,7 +33,7 @@ def main() -> None:
 
         result = json.loads(recognizer.FinalResult())
         text = (result.get('text') or '').strip()
-        print(text)
+        sys.stdout.buffer.write(text.encode('utf-8'))
 
 
 if __name__ == '__main__':
