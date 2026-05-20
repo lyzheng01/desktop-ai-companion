@@ -191,6 +191,31 @@
             pointer-events: auto;
         }
 
+        #speech-status-overlay {
+            position: fixed;
+            left: 50%;
+            bottom: 112px;
+            transform: translateX(-50%);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            min-width: 132px;
+            padding: 12px 16px;
+            border-radius: 16px;
+            background: rgba(31, 41, 55, 0.86);
+            color: white;
+            font-size: 13px;
+            line-height: 1.4;
+            box-shadow: 0 16px 36px rgba(15, 23, 42, 0.24);
+            backdrop-filter: blur(10px);
+            z-index: 2200;
+            pointer-events: none;
+        }
+
+        #speech-status-overlay.visible {
+            display: flex;
+        }
+
         #reaction-bubble-text {
             padding: 10px 14px;
             border-radius: 16px;
@@ -1067,6 +1092,8 @@
                 <div id="character-canvas"></div>
             </div>
         </div>
+
+        <div id="speech-status-overlay"></div>
 
         <!-- 聊天窗口 -->
         <div id="chat-window">

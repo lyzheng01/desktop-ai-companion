@@ -600,25 +600,38 @@ function updateChatTitle() {
 
 function updateSpeechInputButton() {
     const button = document.getElementById('speech-input-btn') as HTMLButtonElement | null;
+    const overlay = document.getElementById('speech-status-overlay');
     if (!button) {
         return;
     }
     if (!appSettings.speech_input_enabled) {
         button.textContent = '语音关';
         button.disabled = true;
+        overlay?.classList.remove('visible');
+        if (overlay) overlay.textContent = '';
         return;
     }
     button.disabled = false;
     if (speechRecordingState === 'recording') {
         button.textContent = '结束';
+        if (overlay) {
+            overlay.textContent = '正在录音，点击结束';
+            overlay.classList.add('visible');
+        }
         return;
     }
     if (speechRecordingState === 'transcribing') {
         button.textContent = '识别中';
         button.disabled = true;
+        if (overlay) {
+            overlay.textContent = '正在识别，请稍候';
+            overlay.classList.add('visible');
+        }
         return;
     }
     button.textContent = '语音';
+    overlay?.classList.remove('visible');
+    if (overlay) overlay.textContent = '';
 }
 
 function getCharacterDisplayName(name: string) {
@@ -3012,6 +3025,37 @@ async function sendMessage() {
     }
 }
 
+function bindSpeechInputButton() {
+    const speechInputBtn = document.getElementById('speech-input-btn') as HTMLButtonElement | null;
+    speechInputBtn?.addEventListener('click', async () => {
+        if (!appSettings.speech_input_enabled) {
+            return;
+        }
+        const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+        if (!input) {
+            return;
+        }
+
+        try {
+            if (speechRecordingState === 'idle') {
+                await speechInputManager.start();
+                return;
+            }
+            if (speechRecordingState === 'recording') {
+                const text = await speechInputManager.stopAndTranscribe();
+                if (text.trim()) {
+                    input.value = text.trim();
+                    input.focus();
+                }
+            }
+        } catch (error) {
+            console.error('Speech input failed.', error);
+            speechRecordingState = 'idle';
+            updateSpeechInputButton();
+        }
+    });
+}
+
 function addMessage(role: string, content: string): HTMLDivElement | null {
     const messagesContainer = document.getElementById('chat-messages');
     if (!messagesContainer) return null;
@@ -3613,6 +3657,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         closeBtn?.addEventListener('click', closeChat);
         const sendBtn = document.getElementById('send-btn');
         sendBtn?.addEventListener('click', sendMessage);
+        bindSpeechInputButton();
         const chatInput = document.getElementById('chat-input') as HTMLTextAreaElement | null;
         chatInput?.addEventListener('focus', () => {
             markUserActivity();
@@ -3676,34 +3721,7 @@ window.addEventListener('DOMContentLoaded', async () => {
         sendBtn.addEventListener('click', sendMessage);
     }
 
-    const speechInputBtn = document.getElementById('speech-input-btn') as HTMLButtonElement | null;
-    speechInputBtn?.addEventListener('click', async () => {
-        if (!appSettings.speech_input_enabled) {
-            return;
-        }
-        const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
-        if (!input) {
-            return;
-        }
-
-        try {
-            if (speechRecordingState === 'idle') {
-                await speechInputManager.start();
-                return;
-            }
-            if (speechRecordingState === 'recording') {
-                const text = await speechInputManager.stopAndTranscribe();
-                if (text.trim()) {
-                    input.value = text.trim();
-                    input.focus();
-                }
-            }
-        } catch (error) {
-            console.error('Speech input failed.', error);
-            speechRecordingState = 'idle';
-            updateSpeechInputButton();
-        }
-    });
+    bindSpeechInputButton();
 
     const chatInput = document.getElementById('chat-input') as HTMLTextAreaElement | null;
     chatInput?.addEventListener('focus', () => {
