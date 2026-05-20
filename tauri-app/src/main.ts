@@ -11,6 +11,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { ApiRequestError, ChatClient, type ChatMessage, type CompanionProfile, type ImportedModelItem } from './chat-client';
 import { HIYORI_ACTIONS, HIYORI_ACTION_KEYS, type HiyoriAction } from './hiyori-actions';
+import { VoiceManager } from './voice/voice-manager';
+import type { VoiceAutoPlayMode } from './voice/voice-types';
 
 // ============== 全局状态 ==============
 
@@ -22,6 +24,9 @@ type AppSettings = {
     personality: string[];
     interaction_mode: string;
     proactive_mode: string;
+    voice_enabled: boolean;
+    voice_pack: string;
+    voice_auto_play_mode: VoiceAutoPlayMode;
     window_x: number;
     window_y: number;
     window_scale: number;
@@ -115,6 +120,7 @@ const DEFAULT_BACKEND_URL = 'http://119.91.32.174:8080';
 let backendBaseUrl = DEFAULT_BACKEND_URL;
 let frontendMemoriesCache: FrontendMemoryItem[] = [];
 let frontendHistoryCache: FrontendHistoryItem[] = [];
+const voiceManager = new VoiceManager();
 const chatClient = new ChatClient({
     apiEndpoint: `${backendBaseUrl}/chat`,
     memoryContextProvider: () => buildFrontendMemoryContextMessages(),
@@ -234,6 +240,9 @@ let appSettings: AppSettings = {
     personality: ['温柔'],
     interaction_mode: 'work',
     proactive_mode: 'greet',
+    voice_enabled: true,
+    voice_pack: 'warm-female',
+    voice_auto_play_mode: 'phrases-only',
     window_x: 100,
     window_y: 100,
     window_scale: 1,
@@ -345,6 +354,9 @@ async function getProactiveFollowupLine(): Promise<string | null> {
 async function showProactiveBubble(trigger: ProactiveTriggerType, text: string) {
     pendingProactiveChatSeed = text;
     showReactionBubble(text);
+    if (appSettings.voice_enabled && appSettings.voice_auto_play_mode !== 'off') {
+        void voiceManager.playPhrase(text);
+    }
     if (app?.screen) {
         animateFocus(app.screen.width * 0.5, app.screen.height * 0.24, 1200);
     }
@@ -521,11 +533,19 @@ async function loadAppSettings(options: {
             personality: data.personality ?? ['温柔'],
             interaction_mode: data.interaction_mode ?? 'work',
             proactive_mode: data.proactive_mode ?? 'greet',
+            voice_enabled: data.voice_enabled ?? true,
+            voice_pack: data.voice_pack ?? 'warm-female',
+            voice_auto_play_mode: data.voice_auto_play_mode ?? 'phrases-only',
             window_x: data.window_x ?? 100,
             window_y: data.window_y ?? 100,
             window_scale: data.window_scale ?? 1,
             character_scales: data.character_scales ?? {},
         };
+
+        voiceManager.setEnabled(appSettings.voice_enabled);
+        if (appSettings.voice_enabled) {
+            await voiceManager.setVoicePack(appSettings.voice_pack);
+        }
 
         if (options.activeCompanionOverride) {
             applyActiveCompanion(options.activeCompanionOverride);
@@ -1201,6 +1221,21 @@ function syncCompanionSettingsForm() {
         proactiveModeSelect.value = appSettings.proactive_mode;
     }
 
+    const voiceEnabledInput = document.getElementById('voice-enabled-input') as HTMLInputElement | null;
+    if (voiceEnabledInput) {
+        voiceEnabledInput.checked = appSettings.voice_enabled;
+    }
+
+    const voicePackSelect = document.getElementById('voice-pack-select') as HTMLSelectElement | null;
+    if (voicePackSelect) {
+        voicePackSelect.value = appSettings.voice_pack;
+    }
+
+    const voiceAutoPlayModeSelect = document.getElementById('voice-auto-play-mode-select') as HTMLSelectElement | null;
+    if (voiceAutoPlayModeSelect) {
+        voiceAutoPlayModeSelect.value = appSettings.voice_auto_play_mode;
+    }
+
     const userDisplayNameInput = document.getElementById('user-display-name-input') as HTMLInputElement | null;
     if (userDisplayNameInput) {
         userDisplayNameInput.value = appSettings.user_display_name;
@@ -1394,6 +1429,28 @@ function bindCompanionSettingsForm() {
         void saveAppSettings();
     });
 
+    const voiceEnabledInput = document.getElementById('voice-enabled-input') as HTMLInputElement | null;
+    voiceEnabledInput?.addEventListener('change', () => {
+        appSettings.voice_enabled = voiceEnabledInput.checked;
+        voiceManager.setEnabled(appSettings.voice_enabled);
+        void saveAppSettings();
+    });
+
+    const voicePackSelect = document.getElementById('voice-pack-select') as HTMLSelectElement | null;
+    voicePackSelect?.addEventListener('change', async () => {
+        appSettings.voice_pack = voicePackSelect.value;
+        if (appSettings.voice_enabled) {
+            await voiceManager.setVoicePack(appSettings.voice_pack);
+        }
+        void saveAppSettings();
+    });
+
+    const voiceAutoPlayModeSelect = document.getElementById('voice-auto-play-mode-select') as HTMLSelectElement | null;
+    voiceAutoPlayModeSelect?.addEventListener('change', () => {
+        appSettings.voice_auto_play_mode = voiceAutoPlayModeSelect.value as VoiceAutoPlayMode;
+        void saveAppSettings();
+    });
+
     const createCompanionButton = document.getElementById('create-companion-btn') as HTMLButtonElement | null;
     createCompanionButton?.addEventListener('click', () => {
         if (createCompanionButton.disabled) {
@@ -1532,6 +1589,9 @@ async function handleCompanionSingleClick(region: CharacterRegion) {
     const bubbleLine = getBubbleLineForRegion(region);
     window.setTimeout(() => {
         showReactionBubble(bubbleLine);
+        if (appSettings.voice_enabled) {
+            void voiceManager.playPhrase(bubbleLine);
+        }
     }, 180);
     await triggerRegionReaction(region);
 }
@@ -2869,6 +2929,9 @@ async function sendMessage() {
             const ackDiv = addMessage('assistant', memoryAcknowledgement);
             if (ackDiv) {
                 ackDiv.parentElement?.classList.add('memory-ack');
+            }
+            if (appSettings.voice_enabled) {
+                void voiceManager.playPhrase('我记住了。');
             }
         }
         void refreshMemoryList();

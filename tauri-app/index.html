@@ -578,6 +578,11 @@
             color: #333;
         }
 
+        .settings-item input[type="checkbox"] {
+            width: auto;
+            margin-top: 10px;
+        }
+
         .settings-scale-row {
             display: flex;
             align-items: center;
@@ -1142,6 +1147,27 @@
                         <option value="quiet">尽量安静，只有我叫它时再回应</option>
                         <option value="greet" selected>偶尔打个招呼</option>
                         <option value="remind">可以主动提醒我休息/睡觉</option>
+                    </select>
+                </div>
+                <div class="settings-item">
+                    <strong>语音</strong>
+
+                    <label for="voice-enabled-input">开启语音</label>
+                    <input id="voice-enabled-input" type="checkbox">
+
+                    <label for="voice-pack-select">搭子音色</label>
+                    <select id="voice-pack-select">
+                        <option value="warm-female">温柔女声</option>
+                        <option value="cheerful-female">元气女声</option>
+                        <option value="calm-male">沉稳男声</option>
+                        <option value="cute-child">可爱童音</option>
+                    </select>
+
+                    <label for="voice-auto-play-mode-select">自动播报</label>
+                    <select id="voice-auto-play-mode-select">
+                        <option value="off">关闭</option>
+                        <option value="phrases-only">只播短句</option>
+                        <option value="all">全部播报</option>
                     </select>
                 </div>
                 <div class="settings-item">
