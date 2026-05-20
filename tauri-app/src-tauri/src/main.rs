@@ -7,6 +7,7 @@ use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const CHAT_WINDOW_LABEL: &str = "chat";
@@ -93,6 +94,32 @@ fn quit_app(app: AppHandle) {
 #[tauri::command]
 fn get_backend_base_url() -> String {
     std::env::var("DESKTOP_AI_COMPANION_BACKEND_URL").unwrap_or_else(|_| BACKEND_PUBLIC_URL.to_string())
+}
+
+#[tauri::command]
+fn save_temp_audio_file(payload: Vec<u8>, extension: String) -> Result<String, String> {
+    let temp_dir = std::env::temp_dir().join("desktop-ai-companion-audio")
+        ;
+    fs::create_dir_all(&temp_dir).map_err(|err| format!("failed to create temp audio dir: {err}"))?;
+
+    let suffix = extension.trim().trim_start_matches('.');
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|err| format!("failed to read system clock: {err}"))?
+        .as_millis();
+    let file_path = temp_dir.join(format!("speech-{timestamp}.{suffix}"));
+    fs::write(&file_path, payload).map_err(|err| format!("failed to write temp audio file: {err}"))?;
+    Ok(file_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn transcribe_audio_file(path: String) -> Result<String, String> {
+    let audio_path = PathBuf::from(path);
+    if !audio_path.exists() {
+        return Err("audio file not found".to_string());
+    }
+
+    Ok("[语音识别占位结果]".to_string())
 }
 
 fn resolve_frontend_memory_file_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -257,7 +284,7 @@ fn main() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![show_main_window, hide_main_window, show_chat_window, hide_chat_window, show_settings_window, hide_settings_window, show_model_window, hide_model_window, quit_app, get_backend_base_url, load_frontend_memory_file, save_frontend_memory_file, load_frontend_config_file, save_frontend_config_file, load_frontend_history_file, save_frontend_history_file])
+        .invoke_handler(tauri::generate_handler![show_main_window, hide_main_window, show_chat_window, hide_chat_window, show_settings_window, hide_settings_window, show_model_window, hide_model_window, quit_app, get_backend_base_url, save_temp_audio_file, transcribe_audio_file, load_frontend_memory_file, save_frontend_memory_file, load_frontend_config_file, save_frontend_config_file, load_frontend_history_file, save_frontend_history_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

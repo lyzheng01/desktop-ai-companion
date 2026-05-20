@@ -1101,6 +1101,7 @@
             <div class="chat-messages" id="chat-messages"></div>
             <div class="chat-input-area">
                 <textarea id="chat-input" placeholder="输入消息... (Shift+Enter 换行)" rows="2"></textarea>
+                <button id="speech-input-btn" type="button">语音</button>
                 <button id="send-btn">发送</button>
             </div>
         </div>
@@ -1169,6 +1170,9 @@
                         <option value="phrases-only">只播短句</option>
                         <option value="all">全部播报</option>
                     </select>
+
+                    <label for="speech-input-enabled-input">开启语音输入</label>
+                    <input id="speech-input-enabled-input" type="checkbox">
                 </div>
                 <div class="settings-item">
                     <strong>缩放</strong>

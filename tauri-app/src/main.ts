@@ -13,6 +13,7 @@ import { ApiRequestError, ChatClient, type ChatMessage, type CompanionProfile, t
 import { HIYORI_ACTIONS, HIYORI_ACTION_KEYS, type HiyoriAction } from './hiyori-actions';
 import { VoiceManager } from './voice/voice-manager';
 import type { VoiceAutoPlayMode } from './voice/voice-types';
+import { SpeechInputManager } from './speech/speech-input';
 
 // ============== 全局状态 ==============
 
@@ -27,6 +28,7 @@ type AppSettings = {
     voice_enabled: boolean;
     voice_pack: string;
     voice_auto_play_mode: VoiceAutoPlayMode;
+    speech_input_enabled: boolean;
     window_x: number;
     window_y: number;
     window_scale: number;
@@ -121,6 +123,13 @@ let backendBaseUrl = DEFAULT_BACKEND_URL;
 let frontendMemoriesCache: FrontendMemoryItem[] = [];
 let frontendHistoryCache: FrontendHistoryItem[] = [];
 const voiceManager = new VoiceManager();
+let speechRecordingState: 'idle' | 'recording' | 'transcribing' = 'idle';
+const speechInputManager = new SpeechInputManager({
+    onStateChange: (state) => {
+        speechRecordingState = state;
+        updateSpeechInputButton();
+    },
+});
 const chatClient = new ChatClient({
     apiEndpoint: `${backendBaseUrl}/chat`,
     memoryContextProvider: () => buildFrontendMemoryContextMessages(),
@@ -243,6 +252,7 @@ let appSettings: AppSettings = {
     voice_enabled: true,
     voice_pack: 'warm-female',
     voice_auto_play_mode: 'phrases-only',
+    speech_input_enabled: true,
     window_x: 100,
     window_y: 100,
     window_scale: 1,
@@ -536,6 +546,7 @@ async function loadAppSettings(options: {
             voice_enabled: data.voice_enabled ?? true,
             voice_pack: data.voice_pack ?? 'warm-female',
             voice_auto_play_mode: data.voice_auto_play_mode ?? 'phrases-only',
+            speech_input_enabled: data.speech_input_enabled ?? true,
             window_x: data.window_x ?? 100,
             window_y: data.window_y ?? 100,
             window_scale: data.window_scale ?? 1,
@@ -585,6 +596,29 @@ function updateChatTitle() {
     if (title) {
         title.textContent = appSettings.character_name;
     }
+}
+
+function updateSpeechInputButton() {
+    const button = document.getElementById('speech-input-btn') as HTMLButtonElement | null;
+    if (!button) {
+        return;
+    }
+    if (!appSettings.speech_input_enabled) {
+        button.textContent = '语音关';
+        button.disabled = true;
+        return;
+    }
+    button.disabled = false;
+    if (speechRecordingState === 'recording') {
+        button.textContent = '结束';
+        return;
+    }
+    if (speechRecordingState === 'transcribing') {
+        button.textContent = '识别中';
+        button.disabled = true;
+        return;
+    }
+    button.textContent = '语音';
 }
 
 function getCharacterDisplayName(name: string) {
@@ -1236,6 +1270,12 @@ function syncCompanionSettingsForm() {
         voiceAutoPlayModeSelect.value = appSettings.voice_auto_play_mode;
     }
 
+    const speechInputEnabledInput = document.getElementById('speech-input-enabled-input') as HTMLInputElement | null;
+    if (speechInputEnabledInput) {
+        speechInputEnabledInput.checked = appSettings.speech_input_enabled;
+    }
+    updateSpeechInputButton();
+
     const userDisplayNameInput = document.getElementById('user-display-name-input') as HTMLInputElement | null;
     if (userDisplayNameInput) {
         userDisplayNameInput.value = appSettings.user_display_name;
@@ -1469,6 +1509,13 @@ function bindCompanionSettingsForm() {
                 voice_auto_play_mode: appSettings.voice_auto_play_mode,
             });
         }
+        void saveAppSettings();
+    });
+
+    const speechInputEnabledInput = document.getElementById('speech-input-enabled-input') as HTMLInputElement | null;
+    speechInputEnabledInput?.addEventListener('change', () => {
+        appSettings.speech_input_enabled = speechInputEnabledInput.checked;
+        updateSpeechInputButton();
         void saveAppSettings();
     });
 
@@ -3628,6 +3675,35 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (sendBtn) {
         sendBtn.addEventListener('click', sendMessage);
     }
+
+    const speechInputBtn = document.getElementById('speech-input-btn') as HTMLButtonElement | null;
+    speechInputBtn?.addEventListener('click', async () => {
+        if (!appSettings.speech_input_enabled) {
+            return;
+        }
+        const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+        if (!input) {
+            return;
+        }
+
+        try {
+            if (speechRecordingState === 'idle') {
+                await speechInputManager.start();
+                return;
+            }
+            if (speechRecordingState === 'recording') {
+                const text = await speechInputManager.stopAndTranscribe();
+                if (text.trim()) {
+                    input.value = text.trim();
+                    input.focus();
+                }
+            }
+        } catch (error) {
+            console.error('Speech input failed.', error);
+            speechRecordingState = 'idle';
+            updateSpeechInputButton();
+        }
+    });
 
     const chatInput = document.getElementById('chat-input') as HTMLTextAreaElement | null;
     chatInput?.addEventListener('focus', () => {
