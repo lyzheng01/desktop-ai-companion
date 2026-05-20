@@ -832,6 +832,7 @@
             border-top: 1px solid #e0e0e0;
             display: flex;
             gap: 8px;
+            align-items: flex-end;
         }
 
         #chat-input {
@@ -860,6 +861,39 @@
 
         #send-btn:hover {
             opacity: 0.9;
+        }
+
+        #speech-input-btn {
+            flex: 0 0 auto;
+            width: 44px;
+            height: 44px;
+            border: none;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #f6d5f7 0%, #d7c8ff 100%);
+            box-shadow: 0 8px 18px rgba(124, 88, 204, 0.18);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            padding: 0;
+            color: #6f42c1;
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        #speech-input-btn.recording {
+            background: linear-gradient(135deg, #ffb3cf 0%, #ff8fb1 100%);
+            color: #8a1236;
+        }
+
+        #speech-input-btn.transcribing {
+            background: linear-gradient(135deg, #ffe1a8 0%, #ffd36e 100%);
+            color: #8f5a00;
+        }
+
+        #speech-input-btn:disabled {
+            opacity: 0.65;
+            cursor: default;
         }
 
         /* 右键菜单 */

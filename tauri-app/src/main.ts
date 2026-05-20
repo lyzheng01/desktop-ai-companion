@@ -604,6 +604,7 @@ function updateSpeechInputButton() {
     if (!button) {
         return;
     }
+    button.classList.remove('recording', 'transcribing');
     if (!appSettings.speech_input_enabled) {
         button.textContent = '语音关';
         button.disabled = true;
@@ -613,7 +614,8 @@ function updateSpeechInputButton() {
     }
     button.disabled = false;
     if (speechRecordingState === 'recording') {
-        button.textContent = '结束';
+        button.textContent = '录音中';
+        button.classList.add('recording');
         if (overlay) {
             overlay.textContent = '正在录音，点击结束';
             overlay.classList.add('visible');
@@ -623,6 +625,7 @@ function updateSpeechInputButton() {
     if (speechRecordingState === 'transcribing') {
         button.textContent = '识别中';
         button.disabled = true;
+        button.classList.add('transcribing');
         if (overlay) {
             overlay.textContent = '正在识别，请稍候';
             overlay.classList.add('visible');
