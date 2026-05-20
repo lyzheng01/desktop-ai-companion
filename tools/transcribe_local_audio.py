@@ -10,6 +10,24 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 MODEL_DIR = REPO_ROOT / 'speech-models' / 'vosk-model-small-cn-0.22'
 
 
+def normalize_transcribed_text(text: str) -> str:
+    text = ' '.join(text.split())
+    chars = []
+    prev_is_cjk = False
+
+    for ch in text:
+        is_cjk = '\u4e00' <= ch <= '\u9fff'
+        if ch == ' ' and prev_is_cjk:
+            continue
+        chars.append(ch)
+        prev_is_cjk = is_cjk
+
+    normalized = ''.join(chars)
+    normalized = normalized.replace(' ，', '，').replace(' 。', '。').replace(' ？', '？').replace(' ！', '！')
+    normalized = normalized.replace(' ：', '：').replace(' ；', '；').replace(' 、', '、')
+    return normalized.strip()
+
+
 def main() -> None:
     if len(sys.argv) < 2:
         raise SystemExit('usage: python tools/transcribe_local_audio.py <wav-path>')
@@ -33,7 +51,7 @@ def main() -> None:
 
         result = json.loads(recognizer.FinalResult())
         text = (result.get('text') or '').strip()
-        sys.stdout.buffer.write(text.encode('utf-8'))
+        sys.stdout.buffer.write(normalize_transcribed_text(text).encode('utf-8'))
 
 
 if __name__ == '__main__':
