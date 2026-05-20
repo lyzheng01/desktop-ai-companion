@@ -11,18 +11,8 @@ MODEL_DIR = REPO_ROOT / 'speech-models' / 'vosk-model-small-cn-0.22'
 
 
 def normalize_transcribed_text(text: str) -> str:
-    text = ' '.join(text.split())
-    chars = []
-    prev_is_cjk = False
-
-    for ch in text:
-        is_cjk = '\u4e00' <= ch <= '\u9fff'
-        if ch == ' ' and prev_is_cjk:
-            continue
-        chars.append(ch)
-        prev_is_cjk = is_cjk
-
-    normalized = ''.join(chars)
+    normalized = ' '.join(text.split()).strip()
+    normalized = normalized.replace(' ', '')
     normalized = normalized.replace(' ，', '，').replace(' 。', '。').replace(' ？', '？').replace(' ！', '！')
     normalized = normalized.replace(' ：', '：').replace(' ；', '；').replace(' 、', '、')
     return normalized.strip()
