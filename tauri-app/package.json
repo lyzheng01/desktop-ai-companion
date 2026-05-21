@@ -1,6 +1,6 @@
 {
   "name": "desktop-ai-companion",
-  "version": "0.1.0",
+  "version": "0.1.6",
   "description": "Desktop AI Companion - Live2D Pet",
   "type": "module",
   "scripts": {

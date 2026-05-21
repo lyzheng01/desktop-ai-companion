@@ -14,6 +14,7 @@ export interface ChatConfig {
     model?: string;
     memoryContextProvider?: () => ChatMessage[];
     historyContextProvider?: () => ChatMessage[];
+    clientVersionProvider?: () => string;
 }
 
 export interface MemoryItem {
@@ -81,6 +82,14 @@ export class ChatClient {
         return [...memoryContext, ...historyContext, ...this.messages.slice(-10)];
     }
 
+    private buildRequestHeaders(extraHeaders: HeadersInit = {}): HeadersInit {
+        return {
+            'Content-Type': 'application/json',
+            'X-Client-Version': this.config.clientVersionProvider?.() || '0.1.0',
+            ...extraHeaders,
+        };
+    }
+
     // 添加消息监听器
     public onMessage(callback: (msg: ChatMessage) => void) {
         this.listeners.add(callback);
@@ -137,7 +146,7 @@ export class ChatClient {
 
         const response = await fetch(this.getEndpointUrl('chat-stream'), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: this.buildRequestHeaders(),
             body: JSON.stringify({
                 message: content,
                 context: this.buildRequestContext(),
@@ -228,7 +237,7 @@ export class ChatClient {
     public async loadHistory(limit: number = 20): Promise<ChatMessage[]> {
         const historyEndpoint = this.getEndpointUrl('history');
 
-        const response = await fetch(`${historyEndpoint}?limit=${limit}`);
+        const response = await fetch(`${historyEndpoint}?limit=${limit}`, { headers: this.buildRequestHeaders() });
         if (!response.ok) {
             throw new Error(`History request failed: ${response.status}`);
         }
@@ -240,7 +249,7 @@ export class ChatClient {
     }
 
     public async loadMemory(): Promise<MemoryItem[]> {
-        const response = await fetch(this.getEndpointUrl('memory'));
+        const response = await fetch(this.getEndpointUrl('memory'), { headers: this.buildRequestHeaders() });
         if (!response.ok) {
             throw new Error(`Memory request failed: ${response.status}`);
         }
@@ -248,14 +257,14 @@ export class ChatClient {
     }
 
     public async deleteMemory(memoryId: number): Promise<void> {
-        const response = await fetch(`${this.getEndpointUrl('memory')}/${memoryId}`, { method: 'DELETE' });
+        const response = await fetch(`${this.getEndpointUrl('memory')}/${memoryId}`, { method: 'DELETE', headers: this.buildRequestHeaders() });
         if (!response.ok) {
             throw new Error(`Delete memory failed: ${response.status}`);
         }
     }
 
     public async loadCompanions(): Promise<CompanionProfile[]> {
-        const response = await fetch(this.getEndpointUrl('companions'));
+        const response = await fetch(this.getEndpointUrl('companions'), { headers: this.buildRequestHeaders() });
         if (!response.ok) {
             throw new Error(`Companions request failed: ${response.status}`);
         }
@@ -263,7 +272,7 @@ export class ChatClient {
     }
 
     public async loadActiveCompanion(): Promise<CompanionProfile | null> {
-        const response = await fetch(this.getEndpointUrl('companions-active'));
+        const response = await fetch(this.getEndpointUrl('companions-active'), { headers: this.buildRequestHeaders() });
         if (response.status === 404) {
             return null;
         }
@@ -281,7 +290,7 @@ export class ChatClient {
     }): Promise<number> {
         const response = await fetch(this.getEndpointUrl('companions'), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: this.buildRequestHeaders(),
             body: JSON.stringify(payload),
         });
         if (!response.ok) {
@@ -294,6 +303,7 @@ export class ChatClient {
     public async activateCompanion(companionId: number): Promise<void> {
         const response = await fetch(`${this.getEndpointUrl('companions')}/${companionId}/activate`, {
             method: 'POST',
+            headers: this.buildRequestHeaders(),
         });
         if (!response.ok) {
             throw new Error(`Activate companion failed: ${response.status}`);
@@ -301,7 +311,7 @@ export class ChatClient {
     }
 
     public async loadImportedModels(): Promise<ImportedModelItem[]> {
-        const response = await fetch(this.getEndpointUrl('models-imported'));
+        const response = await fetch(this.getEndpointUrl('models-imported'), { headers: this.buildRequestHeaders() });
         if (!response.ok) {
             throw new Error(`Imported models request failed: ${response.status}`);
         }
@@ -309,7 +319,7 @@ export class ChatClient {
     }
 
     public async loadCatalogModels(): Promise<CatalogModelItem[]> {
-        const response = await fetch(this.getEndpointUrl('models-catalog'));
+        const response = await fetch(this.getEndpointUrl('models-catalog'), { headers: this.buildRequestHeaders() });
         if (!response.ok) {
             throw new Error(`Catalog models request failed: ${response.status}`);
         }
@@ -319,7 +329,7 @@ export class ChatClient {
     public async importModel(payload: { name: string; model_path: string }): Promise<void> {
         const response = await fetch(this.getEndpointUrl('models-imported'), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: this.buildRequestHeaders(),
             body: JSON.stringify(payload),
         });
         if (!response.ok) {
@@ -330,7 +340,7 @@ export class ChatClient {
     public async installCatalogModel(modelKey: string): Promise<void> {
         const response = await fetch(this.getEndpointUrl('models-catalog-install'), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: this.buildRequestHeaders(),
             body: JSON.stringify({ model_key: modelKey }),
         });
         if (!response.ok) {
@@ -339,7 +349,7 @@ export class ChatClient {
     }
 
     public async loadDataDir(): Promise<DataDirInfo> {
-        const response = await fetch(this.getEndpointUrl('data-dir'));
+        const response = await fetch(this.getEndpointUrl('data-dir'), { headers: this.buildRequestHeaders() });
         if (!response.ok) {
             throw new Error(`Data dir request failed: ${response.status}`);
         }
@@ -349,7 +359,7 @@ export class ChatClient {
     public async saveDataDir(dataDir: string): Promise<DataDirInfo> {
         const response = await fetch(this.getEndpointUrl('data-dir'), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: this.buildRequestHeaders(),
             body: JSON.stringify({ data_dir: dataDir, migrate_existing: true }),
         });
         if (!response.ok) {
@@ -366,7 +376,7 @@ export class ChatClient {
         try {
             const response = await fetch(localEndpoint, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: this.buildRequestHeaders(),
                 body: JSON.stringify({
                     message: userMessage,
                     context: this.buildRequestContext(),

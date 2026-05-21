@@ -1,0 +1,11 @@
+{
+  "latest_version": "0.1.1",
+  "min_supported_version": "0.1.0",
+  "download_url": "https://your-domain.example/downloads/desktop-ai-companion-v0.1.1-setup.exe",
+  "notes": [
+    "修复聊天窗口没有清空按钮的问题",
+    "新增应用内版本显示和检查更新入口",
+    "优化本地语音输入的错误提示"
+  ],
+  "mandatory": false
+}

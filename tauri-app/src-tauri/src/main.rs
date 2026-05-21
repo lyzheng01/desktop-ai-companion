@@ -17,6 +17,40 @@ const BACKEND_PUBLIC_URL: &str = "http://119.91.32.174:8080";
 const FRONTEND_CONFIG_FILE_NAME: &str = "frontend-config.json";
 const FRONTEND_HISTORY_FILE_NAME: &str = "frontend-history.json";
 const FRONTEND_MEMORY_FILE_NAME: &str = "frontend-memory.json";
+const SPEECH_MODEL_DIR_NAME: &str = "vosk-model-small-cn-0.22";
+
+fn resolve_repo_root() -> Result<PathBuf, String> {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|path| path.parent())
+        .map(|path| path.to_path_buf())
+        .ok_or_else(|| "failed to resolve repo root".to_string())
+}
+
+fn resolve_transcription_resource_paths() -> Result<(PathBuf, PathBuf, PathBuf), String> {
+    let repo_root = resolve_repo_root()?;
+    let script_path = std::env::var("DESKTOP_AI_COMPANION_SPEECH_SCRIPT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| repo_root.join("tools").join("transcribe_local_audio.py"));
+    let model_dir = std::env::var("DESKTOP_AI_COMPANION_SPEECH_MODEL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| repo_root.join("speech-models").join(SPEECH_MODEL_DIR_NAME));
+
+    if !script_path.exists() {
+        return Err(format!(
+            "local speech script not found: {}. Set DESKTOP_AI_COMPANION_SPEECH_SCRIPT to an external script path if needed.",
+            script_path.display()
+        ));
+    }
+    if !model_dir.exists() {
+        return Err(format!(
+            "local speech model dir not found: {}. Set DESKTOP_AI_COMPANION_SPEECH_MODEL_DIR to an external model directory if needed.",
+            model_dir.display()
+        ));
+    }
+
+    Ok((repo_root, script_path, model_dir))
+}
 
 fn show_main_window_inner(app: &AppHandle) {
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -113,27 +147,16 @@ fn save_temp_audio_file(payload: Vec<u8>, extension: String) -> Result<String, S
 }
 
 #[tauri::command]
-fn transcribe_audio_file(app: AppHandle, path: String) -> Result<String, String> {
+fn transcribe_audio_file(path: String) -> Result<String, String> {
     let audio_path = PathBuf::from(path);
     if !audio_path.exists() {
         return Err("audio file not found".to_string());
     }
 
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|err| format!("failed to resolve resource dir: {err}"))?;
-    let script_path = resource_dir.join("transcribe_local_audio.py");
-    let model_dir = resource_dir.join("speech-models").join("vosk-model-small-cn-0.22");
-    if !script_path.exists() {
-        return Err(format!("transcribe script not found: {}", script_path.display()));
-    }
-    if !model_dir.exists() {
-        return Err(format!("speech model dir not found: {}", model_dir.display()));
-    }
+    let (repo_root, script_path, model_dir) = resolve_transcription_resource_paths()?;
 
     let output = Command::new("python")
-        .current_dir(&resource_dir)
+        .current_dir(&repo_root)
         .env("PYTHONIOENCODING", "utf-8")
         .arg(&script_path)
         .arg(&audio_path)

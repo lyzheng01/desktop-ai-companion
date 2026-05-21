@@ -27,6 +27,9 @@ export class SpeechInputManager {
     this.mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true })
     this.chunks = []
     this.audioContext = new AudioContext()
+    if (this.audioContext.state === 'suspended') {
+      await this.audioContext.resume()
+    }
     this.sampleRate = this.audioContext.sampleRate
     this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream)
     this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1)
@@ -52,12 +55,19 @@ export class SpeechInputManager {
     this.processorNode = null
     this.sourceNode = null
 
-    const wavBytes = this.encodeWav(this.flattenChunks(), this.sampleRate)
+    const pcmSamples = this.flattenChunks()
 
     stream?.getTracks().forEach((track) => track.stop())
     this.mediaStream = null
     await this.audioContext.close()
     this.audioContext = null
+
+    if (pcmSamples.length === 0) {
+      this.setState('idle')
+      throw new Error('未采集到麦克风音频，请检查麦克风权限后重试。')
+    }
+
+    const wavBytes = this.encodeWav(pcmSamples, this.sampleRate)
     this.setState('transcribing')
 
     try {

@@ -4,6 +4,7 @@
  */
 
 import * as PIXI from 'pixi.js';
+import { getVersion } from '@tauri-apps/api/app';
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
@@ -41,6 +42,14 @@ type AppSettings = {
 
 type DataDirInfo = {
     data_dir: string;
+};
+
+type ReleaseManifest = {
+    latest_version: string;
+    min_supported_version?: string;
+    download_url: string;
+    notes?: string[];
+    mandatory?: boolean;
 };
 
 type FrontendMemoryItem = {
@@ -123,9 +132,15 @@ const BASE_WINDOW_HEIGHT = 720;
 const MIN_COMPANION_SCALE = 0.3;
 const MAX_COMPANION_SCALE = 2;
 const DEFAULT_BACKEND_URL = 'http://119.91.32.174:8080';
+const UPDATE_MANIFEST_PATH = '/desktop-ai-companion/latest.json';
 let backendBaseUrl = DEFAULT_BACKEND_URL;
 let frontendMemoriesCache: FrontendMemoryItem[] = [];
 let frontendHistoryCache: FrontendHistoryItem[] = [];
+let currentAppVersion = '0.1.0';
+let latestAvailableVersion = '';
+let minimumSupportedVersion = '';
+let forceUpdateRequired = false;
+let pendingReleaseManifest: ReleaseManifest | null = null;
 const voiceManager = new VoiceManager();
 let speechRecordingState: 'idle' | 'recording' | 'transcribing' = 'idle';
 const speechInputManager = new SpeechInputManager({
@@ -138,6 +153,7 @@ const chatClient = new ChatClient({
     apiEndpoint: `${backendBaseUrl}/chat`,
     memoryContextProvider: () => buildFrontendMemoryContextMessages(),
     historyContextProvider: () => buildFrontendHistoryContextMessages(),
+    clientVersionProvider: () => currentAppVersion,
 });
 
 async function resolveBackendBaseUrl() {
@@ -278,6 +294,210 @@ function logProductEvent(name: string, payload: Record<string, unknown> = {}) {
     console.log(`PRODUCT_EVENT ${name} ${JSON.stringify(payload)}`);
 }
 
+function getReleaseManifestUrl() {
+    return `${backendBaseUrl.replace(/\/+$/, '')}${UPDATE_MANIFEST_PATH}`;
+}
+
+function compareVersions(left: string, right: string) {
+    const leftParts = left.split('.').map((part) => Number.parseInt(part, 10) || 0);
+    const rightParts = right.split('.').map((part) => Number.parseInt(part, 10) || 0);
+    const maxLength = Math.max(leftParts.length, rightParts.length);
+    for (let index = 0; index < maxLength; index += 1) {
+        const delta = (leftParts[index] || 0) - (rightParts[index] || 0);
+        if (delta !== 0) {
+            return delta;
+        }
+    }
+    return 0;
+}
+
+function setUpdateStatus(message: string, isError = false) {
+    const status = document.getElementById('update-status-text');
+    if (!status) {
+        return;
+    }
+    status.textContent = message;
+    status.classList.toggle('error', isError);
+}
+
+function setBusinessLocked(locked: boolean) {
+    forceUpdateRequired = locked;
+    document.body.classList.toggle('force-update-required', locked);
+    const overlay = document.getElementById('force-update-overlay');
+    if (overlay) {
+        overlay.hidden = !locked;
+    }
+    refreshForceUpdateOverlay();
+}
+
+function showForceUpdateOverlay() {
+    const overlay = document.getElementById('force-update-overlay');
+    if (overlay) {
+        overlay.hidden = false;
+    }
+    setBusinessLocked(true);
+}
+
+function getClientVersionHeaders() {
+    return { 'X-Client-Version': currentAppVersion };
+}
+
+function renderForceUpdateNotes(notes: string[]) {
+    const list = document.getElementById('force-update-notes');
+    if (!list) {
+        return;
+    }
+    list.innerHTML = '';
+    for (const note of notes) {
+        const item = document.createElement('li');
+        item.textContent = note;
+        list.appendChild(item);
+    }
+}
+
+function renderReleaseNotes(notes: string[]) {
+    const list = document.getElementById('release-notes');
+    if (!list) {
+        return;
+    }
+    list.innerHTML = '';
+    if (!notes.length) {
+        list.hidden = true;
+        return;
+    }
+    for (const note of notes) {
+        const item = document.createElement('li');
+        item.textContent = note;
+        list.appendChild(item);
+    }
+    list.hidden = false;
+}
+
+function refreshForceUpdateOverlay() {
+    const currentVersion = document.getElementById('force-update-current-version');
+    if (currentVersion) {
+        currentVersion.textContent = currentAppVersion;
+    }
+    const minVersion = document.getElementById('force-update-min-version');
+    if (minVersion) {
+        minVersion.textContent = minimumSupportedVersion || '-';
+    }
+    const latestVersion = document.getElementById('force-update-latest-version');
+    if (latestVersion) {
+        latestVersion.textContent = latestAvailableVersion || '-';
+    }
+    const message = document.getElementById('force-update-message');
+    if (message) {
+        message.textContent = forceUpdateRequired
+            ? `当前版本 ${currentAppVersion} 已低于最低支持版本 ${minimumSupportedVersion || '未知'}，已暂停联网功能，请先更新。`
+            : '当前版本过旧时，这里会显示更新要求。';
+    }
+}
+
+function refreshVersionSection() {
+    const versionText = document.getElementById('current-version-text');
+    if (versionText) {
+        versionText.textContent = currentAppVersion;
+    }
+    refreshForceUpdateOverlay();
+}
+
+async function hydrateAppVersion() {
+    try {
+        currentAppVersion = await getVersion();
+    } catch (error) {
+        console.warn('Failed to read app version from Tauri, using fallback package version.', error);
+    }
+    refreshVersionSection();
+}
+
+async function checkForUpdates() {
+    const checkButton = document.getElementById('check-update-btn') as HTMLButtonElement | null;
+    const downloadButton = document.getElementById('download-update-btn') as HTMLButtonElement | null;
+    checkButton && (checkButton.disabled = true);
+    if (downloadButton) {
+        downloadButton.hidden = true;
+    }
+    renderReleaseNotes([]);
+    setUpdateStatus('正在检查更新...');
+
+    try {
+        const response = await fetch(getReleaseManifestUrl(), { cache: 'no-store' });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+
+        const manifest = await response.json() as ReleaseManifest;
+        if (!manifest || typeof manifest.latest_version !== 'string' || typeof manifest.download_url !== 'string') {
+            throw new Error('版本清单缺少 latest_version 或 download_url 字段');
+        }
+
+        pendingReleaseManifest = manifest;
+        latestAvailableVersion = manifest.latest_version;
+        minimumSupportedVersion = manifest.min_supported_version?.trim() || manifest.latest_version;
+        refreshVersionSection();
+        const notes = Array.isArray(manifest.notes) ? manifest.notes.filter((note) => typeof note === 'string' && note.trim()) : [];
+        renderForceUpdateNotes(notes);
+
+        const isOutdated = compareVersions(currentAppVersion, minimumSupportedVersion) < 0;
+        setBusinessLocked(isOutdated);
+
+        if (isOutdated) {
+            renderReleaseNotes(notes);
+            setUpdateStatus(`当前版本 ${currentAppVersion} 已低于最低支持版本 ${minimumSupportedVersion}，请先更新。`);
+            if (downloadButton) {
+                downloadButton.hidden = false;
+            }
+        } else if (compareVersions(manifest.latest_version, currentAppVersion) > 0) {
+            renderReleaseNotes(notes);
+            setUpdateStatus(`发现新版本 ${manifest.latest_version}，当前是 ${currentAppVersion}。`);
+            if (downloadButton) {
+                downloadButton.hidden = false;
+            }
+        } else {
+            renderReleaseNotes([]);
+            setUpdateStatus(`当前已是最新版本 ${currentAppVersion}。`);
+        }
+    } catch (error) {
+        pendingReleaseManifest = null;
+        renderReleaseNotes([]);
+        renderForceUpdateNotes([]);
+        const message = error instanceof Error ? error.message : String(error);
+        setUpdateStatus(`暂时无法检查更新：${message}` , true);
+    } finally {
+        checkButton && (checkButton.disabled = false);
+    }
+}
+
+function downloadLatestRelease() {
+    if (!pendingReleaseManifest?.download_url) {
+        setUpdateStatus('还没有可下载的新版本，请先检查更新。', true);
+        return;
+    }
+    window.open(pendingReleaseManifest.download_url, '_blank', 'noopener');
+}
+
+function bindVersionActions() {
+    document.getElementById('check-update-btn')?.addEventListener('click', () => {
+        void checkForUpdates();
+    });
+    document.getElementById('download-update-btn')?.addEventListener('click', downloadLatestRelease);
+    document.getElementById('force-update-download-btn')?.addEventListener('click', downloadLatestRelease);
+    document.getElementById('force-update-quit-btn')?.addEventListener('click', () => {
+        void invoke('quit_app');
+    });
+    refreshVersionSection();
+}
+
+function ensureBusinessAllowed(actionLabel: string): boolean {
+    if (!forceUpdateRequired) {
+        return true;
+    }
+    showForceUpdateOverlay();
+    setUpdateStatus(`当前版本 ${currentAppVersion} 已过低，${actionLabel} 已被暂停，请先更新。`, true);
+    return false;
+}
+
 function markUserActivity() {
     lastUserActivityAt = Date.now();
 }
@@ -352,7 +572,9 @@ function getProactiveLine(trigger: ProactiveTriggerType, now: Date): string {
 }
 
 async function getProactiveWeatherLine(): Promise<string> {
-    const response = await fetch(`${backendBaseUrl}/proactive/weather?location=合肥`);
+    const response = await fetch(`${backendBaseUrl}/proactive/weather?location=合肥`, {
+        headers: { ...getClientVersionHeaders() },
+    });
     if (!response.ok) {
         throw new Error(`Proactive weather failed: ${response.status}`);
     }
@@ -361,7 +583,9 @@ async function getProactiveWeatherLine(): Promise<string> {
 }
 
 async function getProactiveFollowupLine(): Promise<string | null> {
-    const response = await fetch(`${backendBaseUrl}/proactive/followup`);
+    const response = await fetch(`${backendBaseUrl}/proactive/followup`, {
+        headers: { ...getClientVersionHeaders() },
+    });
     if (!response.ok) {
         throw new Error(`Proactive followup failed: ${response.status}`);
     }
@@ -383,6 +607,9 @@ async function showProactiveBubble(trigger: ProactiveTriggerType, text: string) 
 }
 
 async function evaluateProactiveTriggers() {
+    if (!ensureBusinessAllowed('主动提醒')) {
+        return;
+    }
     const now = new Date();
     if (!canShowProactive(now, 'morning_greeting')) return;
 
@@ -1253,6 +1480,9 @@ function bindFirstRunCreator() {
 
     const submitButton = document.getElementById('creator-submit-btn');
     submitButton?.addEventListener('click', async () => {
+        if (!ensureBusinessAllowed('创建伙伴')) {
+            return;
+        }
         const nameInput = document.getElementById('creator-name-input') as HTMLInputElement | null;
         const characterSelect = document.getElementById('creator-character-select') as HTMLSelectElement | null;
         const modeSelect = document.getElementById('creator-mode-select') as HTMLSelectElement | null;
@@ -1590,6 +1820,9 @@ function bindCompanionSettingsForm() {
     const createCompanionButton = document.getElementById('create-companion-btn') as HTMLButtonElement | null;
     createCompanionButton?.addEventListener('click', () => {
         if (createCompanionButton.disabled) {
+            return;
+        }
+        if (!ensureBusinessAllowed('创建伙伴')) {
             return;
         }
 
@@ -2980,6 +3213,7 @@ function openSettingsPanel() {
     updateCharacterLabel();
     updateScaleControls();
     syncCompanionSettingsForm();
+    refreshVersionSection();
     void refreshCompanionList();
     logProductEvent('settings_opened', { character: currentCharacter });
     void refreshMemoryList();
@@ -3023,6 +3257,7 @@ async function sendMessage() {
 
     const text = input.value.trim();
     if (!text) return;
+    if (!ensureBusinessAllowed('聊天发送')) return;
 
     input.value = '';
     markUserActivity();
@@ -3083,6 +3318,9 @@ async function sendMessage() {
 function bindSpeechInputButton() {
     const speechInputBtn = document.getElementById('speech-input-btn') as HTMLButtonElement | null;
     speechInputBtn?.addEventListener('click', async () => {
+        if (!ensureBusinessAllowed('语音输入')) {
+            return;
+        }
         if (!appSettings.speech_input_enabled) {
             return;
         }
@@ -3113,6 +3351,18 @@ function bindSpeechInputButton() {
             window.alert(`本地语音识别失败：${message}`);
         }
     });
+}
+
+function clearCurrentChatWindow() {
+    const messagesContainer = document.getElementById('chat-messages');
+    if (messagesContainer) {
+        messagesContainer.innerHTML = '';
+    }
+
+    const chatInput = document.getElementById('chat-input') as HTMLTextAreaElement | null;
+    if (chatInput) {
+        chatInput.value = '';
+    }
 }
 
 function addMessage(role: string, content: string): HTMLDivElement | null {
@@ -3398,6 +3648,9 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
 }
 
 async function refreshModelPanel() {
+    if (!ensureBusinessAllowed('模型列表')) {
+        return;
+    }
     modelPreviewVersion = Date.now().toString();
     const imported = await chatClient.loadImportedModels();
     syncImportedModelRegistry(imported);
@@ -3411,6 +3664,9 @@ async function refreshModelPanel() {
 }
 
 function openModelPanel() {
+    if (!ensureBusinessAllowed('模型切换')) {
+        return;
+    }
     if (!isModelStandaloneWindow()) {
         void invoke('show_model_window');
         void getCurrentWebviewWindow().emitTo('model', 'model-open-requested', null);
@@ -3425,6 +3681,9 @@ function openModelPanel() {
 }
 
 async function requestCharacterSwitch(modelKey: string) {
+    if (!ensureBusinessAllowed('模型切换')) {
+        return;
+    }
     if (isModelStandaloneWindow()) {
         await getCurrentWebviewWindow().emitTo('main', 'model-switch-requested', { modelKey });
         await invoke('hide_model_window');
@@ -3498,6 +3757,7 @@ async function initializeStandaloneSettingsWindow() {
     syncCompanionSettingsForm();
     syncDataDirForm();
     syncDataDirSectionVisibility();
+    refreshVersionSection();
     try {
         await refreshCompanionList();
         await refreshMemoryList();
@@ -3717,12 +3977,20 @@ window.addEventListener('DOMContentLoaded', async () => {
     currentWindowLabel = getCurrentWebviewWindow().label;
     document.body.dataset.windowLabel = currentWindowLabel;
     await resolveBackendBaseUrl();
+    bindVersionActions();
+    await hydrateAppVersion();
+    await checkForUpdates();
+    if (forceUpdateRequired) {
+        showForceUpdateOverlay();
+        return;
+    }
     await hydrateFrontendMemories();
     await hydrateFrontendHistory();
 
     if (isChatStandaloneWindow()) {
         const closeBtn = document.querySelector('.close-btn');
         closeBtn?.addEventListener('click', closeChat);
+        document.getElementById('clear-chat-btn')?.addEventListener('click', clearCurrentChatWindow);
         const sendBtn = document.getElementById('send-btn');
         sendBtn?.addEventListener('click', sendMessage);
         bindSpeechInputButton();
@@ -3782,6 +4050,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (closeBtn) {
         closeBtn.addEventListener('click', closeChat);
     }
+
+    document.getElementById('clear-chat-btn')?.addEventListener('click', clearCurrentChatWindow);
 
     // 绑定发送按钮
     const sendBtn = document.getElementById('send-btn');

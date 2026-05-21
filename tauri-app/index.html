@@ -641,6 +641,85 @@
             font-weight: 600;
         }
 
+        #update-status-text {
+            margin-top: 10px;
+            color: #667085;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        #update-status-text.error {
+            color: #b42318;
+        }
+
+        #release-notes {
+            margin-top: 10px;
+            margin-bottom: 0;
+            padding-left: 18px;
+            color: #475467;
+        }
+
+        body.force-update-required #app > *:not(#force-update-overlay) {
+            pointer-events: none;
+            user-select: none;
+        }
+
+        #force-update-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 5000;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            background: rgba(15, 23, 42, 0.62);
+            backdrop-filter: blur(8px);
+        }
+
+        #force-update-overlay[hidden] {
+            display: none;
+        }
+
+        .force-update-card {
+            width: min(420px, 100%);
+            padding: 20px;
+            border-radius: 18px;
+            background: rgba(255, 255, 255, 0.98);
+            box-shadow: 0 24px 64px rgba(15, 23, 42, 0.28);
+            color: #1f2937;
+        }
+
+        .force-update-card h3 {
+            margin: 0 0 8px;
+            font-size: 18px;
+        }
+
+        .force-update-card p {
+            margin: 0;
+            font-size: 13px;
+            line-height: 1.6;
+            color: #475467;
+        }
+
+        .force-update-meta {
+            margin-top: 12px;
+            display: grid;
+            gap: 6px;
+            font-size: 12px;
+            color: #667085;
+        }
+
+        .force-update-card .settings-actions {
+            margin-top: 16px;
+        }
+
+        #force-update-notes {
+            margin-top: 12px;
+            margin-bottom: 0;
+            padding-left: 18px;
+            color: #475467;
+        }
+
         .chat-header {
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
@@ -743,6 +822,27 @@
             display: flex;
             align-items: center;
             justify-content: center;
+        }
+
+        .chat-header-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .chat-header .clear-chat-btn {
+            border: 1px solid rgba(255, 255, 255, 0.28);
+            background: rgba(255, 255, 255, 0.14);
+            color: white;
+            border-radius: 999px;
+            padding: 4px 10px;
+            font-size: 12px;
+            line-height: 1;
+            cursor: pointer;
+        }
+
+        .chat-header .clear-chat-btn:hover {
+            background: rgba(255, 255, 255, 0.22);
         }
 
         .chat-messages {
@@ -1080,6 +1180,23 @@
     <div id="app">
         <div id="bootstrap-error-banner" role="alert"></div>
 
+        <div id="force-update-overlay" hidden>
+            <div class="force-update-card">
+                <h3>需要先更新版本</h3>
+                <p id="force-update-message">当前版本过旧，已暂停联网功能，请下载最新版本后继续使用。</p>
+                <div class="force-update-meta">
+                    <div>当前版本：<span id="force-update-current-version">-</span></div>
+                    <div>最低支持版本：<span id="force-update-min-version">-</span></div>
+                    <div>最新版本：<span id="force-update-latest-version">-</span></div>
+                </div>
+                <ul id="force-update-notes"></ul>
+                <div class="settings-actions">
+                    <button id="force-update-download-btn" type="button">下载最新版本</button>
+                    <button id="force-update-quit-btn" type="button">退出应用</button>
+                </div>
+            </div>
+        </div>
+
         <div id="first-run-panel">
             <div class="first-run-card">
                 <h2>创建你的伙伴</h2>
@@ -1157,7 +1274,10 @@
                         <span id="chat-status-text">想一下</span>
                     </div>
                 </div>
-                <button class="close-btn">×</button>
+                <div class="chat-header-actions">
+                    <button id="clear-chat-btn" class="clear-chat-btn" type="button">清空</button>
+                    <button class="close-btn">×</button>
+                </div>
             </div>
             <div class="chat-messages" id="chat-messages"></div>
             <div class="chat-input-area">
@@ -1263,6 +1383,16 @@
                     <div class="settings-actions">
                         <button id="choose-data-dir-btn" type="button">选择目录</button>
                         <button id="save-data-dir-btn" type="button">保存存储位置</button>
+                    </div>
+                </div>
+                <div class="settings-item">
+                    <strong>版本更新</strong>
+                    <div>当前版本：<span id="current-version-text">读取中...</span></div>
+                    <div id="update-status-text">还没有检查更新。</div>
+                    <ul id="release-notes" hidden></ul>
+                    <div class="settings-actions">
+                        <button id="check-update-btn" type="button">检查更新</button>
+                        <button id="download-update-btn" type="button" hidden>下载新版本</button>
                     </div>
                 </div>
             </div>
