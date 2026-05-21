@@ -12,9 +12,13 @@ MODEL_DIR = REPO_ROOT / 'speech-models' / 'vosk-model-small-cn-0.22'
 
 def normalize_transcribed_text(text: str) -> str:
     normalized = ' '.join(text.split()).strip()
+    # Vosk 中文短句常把词之间打空格，这里先做最保守的清洗：
+    # 直接去掉中间空格，优先保证聊天输入像正常中文。
     normalized = normalized.replace(' ', '')
-    normalized = normalized.replace(' ，', '，').replace(' 。', '。').replace(' ？', '？').replace(' ！', '！')
-    normalized = normalized.replace(' ：', '：').replace(' ；', '；').replace(' 、', '、')
+    normalized = normalized.replace(' ，', '，').replace(' 。', '。')
+    normalized = normalized.replace(' ？', '？').replace(' ！', '！')
+    normalized = normalized.replace(' ：', '：').replace(' ；', '；')
+    normalized = normalized.replace(' 、', '、')
     return normalized.strip()
 
 
