@@ -36,6 +36,7 @@ class SynthesizeResponse(BaseModel):
 
 VOICE_MAP = {
     "warm-female": 1001,
+    "female_1": 1001,
     "cheerful-female": 101001,
     "calm-male": 101004,
     "cute-child": 101016,
