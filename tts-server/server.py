@@ -1,17 +1,14 @@
-import base64
 import hashlib
-import hmac
-import json
 import os
-import time
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from tencentcloud.common import credential
+from tencentcloud.common.exception.tencent_cloud_sdk_exception import TencentCloudSDKException
+from tencentcloud.tts.v20190823 import models, tts_client
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -38,18 +35,10 @@ class SynthesizeResponse(BaseModel):
 
 
 VOICE_MAP = {
-    "warm-female": 101001,
-    "cheerful-female": 101002,
-    "calm-male": 101003,
-    "cute-child": 101004,
-}
-
-EMOTION_MAP = {
-    "calm": "default",
-    "happy": "default",
-    "shy": "default",
-    "concerned": "default",
-    "serious": "default",
+    "warm-female": 1001,
+    "cheerful-female": 101001,
+    "calm-male": 101004,
+    "cute-child": 101016,
 }
 
 app = FastAPI(title="Desktop AI Companion TTS Server")
@@ -61,7 +50,7 @@ def build_cache_key(text: str, voice: str, emotion: str, fmt: str) -> str:
 
 
 def sanitize_text(text: str) -> str:
-    return " ".join(text.strip().split())
+    return " ".join(text.strip().split()).replace("\n", " ").replace("\r", " ")
 
 
 def map_tencent_voice(voice: str) -> int:
@@ -90,111 +79,28 @@ def map_tencent_volume(emotion: str) -> float:
     return volume_map.get(emotion, 0.0)
 
 
-def map_tencent_emotion_style(emotion: str) -> str:
-    return EMOTION_MAP.get(emotion, "default")
-
-
-def sign_tc3(secret_key: str, date: str, service: str, string_to_sign: str) -> str:
-    def _hmac(key: bytes, msg: str) -> bytes:
-        return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
-
-    secret_date = _hmac(("TC3" + secret_key).encode("utf-8"), date)
-    secret_service = _hmac(secret_date, service)
-    secret_signing = _hmac(secret_service, "tc3_request")
-    return hmac.new(secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-async def request_tencent_tts(text: str, voice: str, emotion: str) -> bytes:
+def request_tencent_tts(text: str, voice: str, emotion: str) -> bytes:
     if not TENCENT_SECRET_ID or not TENCENT_SECRET_KEY:
         raise RuntimeError("Tencent TTS credentials are not configured")
 
-    service = "tts"
-    host = TENCENT_TTS_ENDPOINT
-    endpoint = f"https://{host}"
-    action = "TextToVoice"
-    version = "2019-08-23"
-    region = TENCENT_TTS_REGION
-    timestamp = int(time.time())
-    date = datetime.utcfromtimestamp(timestamp).strftime("%Y-%m-%d")
-
-    payload = {
-        "Text": text,
-        "SessionId": hashlib.md5(f"{text}-{timestamp}".encode("utf-8")).hexdigest(),
-        "ModelType": 1,
-        "VoiceType": map_tencent_voice(voice),
-        "Codec": "mp3",
-        "PrimaryLanguage": 1,
-        "SampleRate": 16000,
-        "Volume": map_tencent_volume(emotion),
-        "Speed": map_tencent_speed(emotion),
-        "EmotionCategory": map_tencent_emotion_style(emotion),
-    }
-    payload_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
-
-    http_request_method = "POST"
-    canonical_uri = "/"
-    canonical_querystring = ""
-    canonical_headers = (
-        f"content-type:application/json; charset=utf-8\n"
-        f"host:{host}\n"
-        f"x-tc-action:{action.lower()}\n"
-    )
-    signed_headers = "content-type;host;x-tc-action"
-    hashed_request_payload = hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
-    canonical_request = (
-        f"{http_request_method}\n"
-        f"{canonical_uri}\n"
-        f"{canonical_querystring}\n"
-        f"{canonical_headers}\n"
-        f"{signed_headers}\n"
-        f"{hashed_request_payload}"
-    )
-
-    algorithm = "TC3-HMAC-SHA256"
-    credential_scope = f"{date}/{service}/tc3_request"
-    hashed_canonical_request = hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
-    string_to_sign = (
-        f"{algorithm}\n"
-        f"{timestamp}\n"
-        f"{credential_scope}\n"
-        f"{hashed_canonical_request}"
-    )
-
-    signature = sign_tc3(TENCENT_SECRET_KEY, date, service, string_to_sign)
-    authorization = (
-        f"{algorithm} "
-        f"Credential={TENCENT_SECRET_ID}/{credential_scope}, "
-        f"SignedHeaders={signed_headers}, "
-        f"Signature={signature}"
-    )
-
-    headers = {
-        "Authorization": authorization,
-        "Content-Type": "application/json; charset=utf-8",
-        "Host": host,
-        "X-TC-Action": action,
-        "X-TC-Timestamp": str(timestamp),
-        "X-TC-Version": version,
-        "X-TC-Region": region,
-    }
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(endpoint, headers=headers, content=payload_json.encode("utf-8"))
-
-    response.raise_for_status()
-    data = response.json()
-    if "Response" not in data:
-        raise RuntimeError("Invalid Tencent TTS response")
-
-    result = data["Response"]
-    if "Error" in result:
-        raise RuntimeError(f"Tencent TTS error: {result['Error']}")
-
-    audio_b64 = result.get("Audio")
-    if not audio_b64:
-        raise RuntimeError("Tencent TTS returned empty audio")
-
-    return base64.b64decode(audio_b64)
+    try:
+        cred = credential.Credential(TENCENT_SECRET_ID, TENCENT_SECRET_KEY)
+        client = tts_client.TtsClient(cred, TENCENT_TTS_REGION)
+        req = models.TextToVoiceRequest()
+        req.Text = text
+        req.SessionId = hashlib.md5(f"{text}-{voice}-{emotion}".encode("utf-8")).hexdigest()
+        req.ModelType = 1
+        req.VoiceType = map_tencent_voice(voice)
+        req.Codec = "mp3"
+        req.PrimaryLanguage = 1
+        req.SampleRate = 16000
+        response = client.TextToVoice(req)
+        audio_b64 = response.Audio
+        if not audio_b64:
+            raise RuntimeError("Tencent TTS returned empty audio")
+        return __import__("base64").b64decode(audio_b64)
+    except TencentCloudSDKException as error:
+        raise RuntimeError(f"Tencent TTS error: {error}") from error
 
 
 async def synthesize_with_tencent(text: str, voice: str, emotion: str, output_path: Path) -> Optional[int]:
@@ -203,7 +109,7 @@ async def synthesize_with_tencent(text: str, voice: str, emotion: str, output_pa
         output_path.write_bytes(sample.read_bytes())
         return None
 
-    audio_bytes = await request_tencent_tts(text, voice, emotion)
+    audio_bytes = request_tencent_tts(text, voice, emotion)
     output_path.write_bytes(audio_bytes)
     return None
 

@@ -1,3 +1,4 @@
 fastapi
 uvicorn
 httpx
+tencentcloud-sdk-python
