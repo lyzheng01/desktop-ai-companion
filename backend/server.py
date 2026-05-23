@@ -23,6 +23,8 @@ DEFAULT_LLM_API_KEY = "sk-fe466420f529b88c208dc1c9bb6e52ba"
 DEFAULT_LLM_MODEL = "gpt-5.4"
 NON_STREAM_LLM_TIMEOUT = 180
 STREAM_LLM_TIMEOUT = 300
+TTS_PROXY_TIMEOUT = 30
+DEFAULT_TTS_SERVER_BASE_URL = os.getenv("DESKTOP_AI_COMPANION_TTS_SERVER_URL", "").strip()
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -255,6 +257,17 @@ class ChatResponse(BaseModel):
     content: str
 
 
+class SpeechSynthesizeRequest(BaseModel):
+    text: str
+    voice: str = "warm-female"
+    emotion: str = "calm"
+
+
+class SpeechSynthesizeResponse(BaseModel):
+    audio_url: str | None = None
+    duration_ms: int | None = None
+
+
 class ProactiveMessageResponse(BaseModel):
     trigger: str | None = None
     content: str
@@ -281,6 +294,11 @@ def migrate_data_dir_contents(source: Path, target: Path) -> None:
         else:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(entry, destination)
+
+
+def get_tts_server_base_url() -> str:
+    value = os.getenv("DESKTOP_AI_COMPANION_TTS_SERVER_URL", DEFAULT_TTS_SERVER_BASE_URL).strip()
+    return value.rstrip("/")
 
 
 class CompanionCreateRequest(BaseModel):
@@ -1043,6 +1061,49 @@ async def chat(request: ChatRequest):
 
     response_content = build_assistant_reply(request.message, request.context, current)
     return ChatResponse(content=response_content)
+
+
+@app.post("/speech/synthesize", response_model=SpeechSynthesizeResponse)
+async def synthesize_speech(payload: SpeechSynthesizeRequest):
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Empty text")
+
+    tts_base_url = get_tts_server_base_url()
+    if not tts_base_url:
+        raise HTTPException(status_code=503, detail="TTS server is not configured")
+
+    try:
+        async with httpx.AsyncClient(timeout=TTS_PROXY_TIMEOUT) as client:
+            response = await client.post(
+                f"{tts_base_url}/synthesize",
+                json={
+                    "text": text,
+                    "voice": payload.voice,
+                    "emotion": payload.emotion,
+                    "format": "mp3",
+                },
+            )
+    except httpx.HTTPError as error:
+        raise HTTPException(status_code=502, detail=f"TTS upstream request failed: {error}") from error
+
+    if response.status_code >= 400:
+        detail = response.text.strip() or f"TTS upstream failed: {response.status_code}"
+        raise HTTPException(status_code=502, detail=detail)
+
+    try:
+        data = response.json()
+    except ValueError as error:
+        raise HTTPException(status_code=502, detail="Invalid TTS upstream response") from error
+
+    audio_url = data.get("audio_url")
+    duration_ms = data.get("duration_ms")
+    if audio_url is not None and not isinstance(audio_url, str):
+        raise HTTPException(status_code=502, detail="Invalid TTS upstream audio_url")
+    if duration_ms is not None and not isinstance(duration_ms, int):
+        duration_ms = None
+
+    return SpeechSynthesizeResponse(audio_url=audio_url, duration_ms=duration_ms)
 
 
 @app.post("/chat/stream")

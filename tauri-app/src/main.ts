@@ -108,6 +108,11 @@ type CompanionStateRequest = {
     text?: string;
 };
 
+type RemoteSpeechResponse = {
+    audio_url?: string | null;
+    duration_ms?: number | null;
+};
+
 let app: PIXI.Application;
 let currentModel: any = null;
 let chatWindowVisible = false;
@@ -3470,6 +3475,34 @@ async function ensureSpeechRuntimeAvailable() {
     return false;
 }
 
+function buildSpeechSummary(text: string) {
+    const normalized = text.replace(/\s+/g, ' ').trim();
+    const firstSentence = normalized.split(/[。！？!?]/)[0]?.trim() || normalized;
+    return firstSentence.slice(0, 40);
+}
+
+async function requestRemoteSpeech(text: string, voice: string, emotion: ReplyEmotion) {
+    const response = await fetch(`${backendBaseUrl}/speech/synthesize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text, voice, emotion }),
+    });
+    if (!response.ok) {
+        throw new Error(`Remote TTS failed: ${response.status}`);
+    }
+    return await response.json() as RemoteSpeechResponse;
+}
+
+async function playRemoteAudio(url: string): Promise<void> {
+    await new Promise<void>((resolve, reject) => {
+        const audio = new Audio(resolveModelAssetPath(url));
+        audio.preload = 'auto';
+        audio.onended = () => resolve();
+        audio.onerror = () => reject(new Error('远程语音播放失败'));
+        void audio.play();
+    });
+}
+
 async function startSpeechConversationListening() {
     if (!speechConversationActive || !appSettings.speech_input_enabled || speechRecordingState !== 'idle') {
         updateSpeechInputButton();
@@ -3616,7 +3649,18 @@ async function sendMessage(options: SendMessageOptions = {}) {
         startTalkingAnimation(finalContent, replyEmotion);
         void emitCompanionStateRequest({ type: 'speaking', emotion: replyEmotion, text: finalContent });
         if (options.autoVoiceReply && appSettings.voice_enabled) {
-            await voiceManager.speakText(finalContent);
+            const speechText = buildSpeechSummary(finalContent);
+            try {
+                const result = await requestRemoteSpeech(speechText, appSettings.voice_pack, replyEmotion);
+                if (result.audio_url) {
+                    await playRemoteAudio(result.audio_url);
+                } else {
+                    await voiceManager.speakText(speechText);
+                }
+            } catch (error) {
+                console.warn('Remote TTS failed, falling back to local voice.', error);
+                await voiceManager.speakText(speechText);
+            }
         }
         if (options.continueConversation) {
             scheduleSpeechConversationRestart(420);
