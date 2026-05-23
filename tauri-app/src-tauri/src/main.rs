@@ -4,7 +4,10 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Manager};
 use serde_json::Value;
+use serde_json::json;
 use std::fs;
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,39 +20,58 @@ const BACKEND_PUBLIC_URL: &str = "http://119.91.32.174:8080";
 const FRONTEND_CONFIG_FILE_NAME: &str = "frontend-config.json";
 const FRONTEND_HISTORY_FILE_NAME: &str = "frontend-history.json";
 const FRONTEND_MEMORY_FILE_NAME: &str = "frontend-memory.json";
-const SPEECH_MODEL_DIR_NAME: &str = "vosk-model-small-cn-0.22";
+const SPEECH_RUNTIME_DIR_NAME: &str = "speech-runtime";
+const SPEECH_CLI_FILE_NAME: &str = "whisper-cli.exe";
+const SPEECH_MODEL_FILE_NAME: &str = "ggml-base.bin";
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-fn resolve_repo_root() -> Result<PathBuf, String> {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .and_then(|path| path.parent())
-        .map(|path| path.to_path_buf())
-        .ok_or_else(|| "failed to resolve repo root".to_string())
+fn resolve_speech_runtime_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("failed to resolve app data dir: {err}"))?;
+    Ok(data_dir.join(SPEECH_RUNTIME_DIR_NAME))
 }
 
-fn resolve_transcription_resource_paths() -> Result<(PathBuf, PathBuf, PathBuf), String> {
-    let repo_root = resolve_repo_root()?;
-    let script_path = std::env::var("DESKTOP_AI_COMPANION_SPEECH_SCRIPT")
+fn resolve_speech_runtime_paths(app: &AppHandle) -> Result<(PathBuf, PathBuf), String> {
+    let runtime_dir = resolve_speech_runtime_dir(app)?;
+    let cli_path = std::env::var("DESKTOP_AI_COMPANION_SPEECH_CLI")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| repo_root.join("tools").join("transcribe_local_audio.py"));
-    let model_dir = std::env::var("DESKTOP_AI_COMPANION_SPEECH_MODEL_DIR")
+        .unwrap_or_else(|_| runtime_dir.join(SPEECH_CLI_FILE_NAME));
+    let model_path = std::env::var("DESKTOP_AI_COMPANION_SPEECH_MODEL")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| repo_root.join("speech-models").join(SPEECH_MODEL_DIR_NAME));
+        .unwrap_or_else(|_| runtime_dir.join(SPEECH_MODEL_FILE_NAME));
 
-    if !script_path.exists() {
+    if !cli_path.exists() {
         return Err(format!(
-            "local speech script not found: {}. Set DESKTOP_AI_COMPANION_SPEECH_SCRIPT to an external script path if needed.",
-            script_path.display()
+            "speech runtime not installed: missing {}",
+            cli_path.display()
         ));
     }
-    if !model_dir.exists() {
+    if !model_path.exists() {
         return Err(format!(
-            "local speech model dir not found: {}. Set DESKTOP_AI_COMPANION_SPEECH_MODEL_DIR to an external model directory if needed.",
-            model_dir.display()
+            "speech runtime not installed: missing {}",
+            model_path.display()
         ));
     }
 
-    Ok((repo_root, script_path, model_dir))
+    Ok((cli_path, model_path))
+}
+
+fn normalize_transcribed_text(text: &str) -> String {
+    text.split_whitespace()
+        .collect::<Vec<_>>()
+        .join("")
+        .replace(" ，", "，")
+        .replace(" 。", "。")
+        .replace(" ？", "？")
+        .replace(" ！", "！")
+        .replace(" ：", "：")
+        .replace(" ；", "；")
+        .replace(" 、", "、")
+        .trim()
+        .to_string()
 }
 
 fn show_main_window_inner(app: &AppHandle) {
@@ -147,29 +169,74 @@ fn save_temp_audio_file(payload: Vec<u8>, extension: String) -> Result<String, S
 }
 
 #[tauri::command]
-fn transcribe_audio_file(path: String) -> Result<String, String> {
+fn get_speech_runtime_status(app: AppHandle) -> Result<Value, String> {
+    let runtime_dir = resolve_speech_runtime_dir(&app)?;
+    let cli_path = std::env::var("DESKTOP_AI_COMPANION_SPEECH_CLI")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| runtime_dir.join(SPEECH_CLI_FILE_NAME));
+    let model_path = std::env::var("DESKTOP_AI_COMPANION_SPEECH_MODEL")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| runtime_dir.join(SPEECH_MODEL_FILE_NAME));
+
+    match resolve_speech_runtime_paths(&app) {
+        Ok((cli_path, model_path)) => Ok(json!({
+            "available": true,
+            "runtime_dir": runtime_dir,
+            "cli_path": cli_path,
+            "model_path": model_path,
+        })),
+        Err(error) => Ok(json!({
+            "available": false,
+            "runtime_dir": runtime_dir,
+            "cli_path": cli_path,
+            "model_path": model_path,
+            "error": error,
+        })),
+    }
+}
+
+#[tauri::command]
+fn transcribe_audio_file(app: AppHandle, path: String) -> Result<String, String> {
     let audio_path = PathBuf::from(path);
     if !audio_path.exists() {
         return Err("audio file not found".to_string());
     }
 
-    let (repo_root, script_path, model_dir) = resolve_transcription_resource_paths()?;
+    let (cli_path, model_path) = resolve_speech_runtime_paths(&app)?;
+    let output_base = audio_path.with_extension("");
 
-    let output = Command::new("python")
-        .current_dir(&repo_root)
-        .env("PYTHONIOENCODING", "utf-8")
-        .arg(&script_path)
+    let mut command = Command::new(&cli_path);
+    command
+        .arg("-m")
+        .arg(&model_path)
+        .arg("-f")
         .arg(&audio_path)
-        .arg(&model_dir)
+        .arg("-l")
+        .arg("zh")
+        .arg("-nt")
+        .arg("-otxt")
+        .arg("-of")
+        .arg(&output_base);
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let output = command
         .output()
-        .map_err(|err| format!("failed to launch local transcription: {err}"))?;
+        .map_err(|err| format!("failed to launch local speech runtime: {err}"))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         return Err(if stderr.is_empty() { "local transcription failed".to_string() } else { stderr });
     }
 
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    let txt_path = output_base.with_extension("txt");
+    if !txt_path.exists() {
+        return Err(format!("transcription output not found: {}", txt_path.display()));
+    }
+
+    let raw = fs::read_to_string(&txt_path)
+        .map_err(|err| format!("failed to read transcription output: {err}"))?;
+    Ok(normalize_transcribed_text(&raw))
 }
 
 fn resolve_frontend_memory_file_path(app: &AppHandle) -> Result<PathBuf, String> {
@@ -339,7 +406,7 @@ fn main() {
 
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![show_main_window, hide_main_window, show_chat_window, hide_chat_window, show_settings_window, hide_settings_window, show_model_window, hide_model_window, quit_app, get_backend_base_url, save_temp_audio_file, transcribe_audio_file, load_frontend_memory_file, save_frontend_memory_file, load_frontend_config_file, save_frontend_config_file, load_frontend_history_file, save_frontend_history_file])
+        .invoke_handler(tauri::generate_handler![show_main_window, hide_main_window, show_chat_window, hide_chat_window, show_settings_window, hide_settings_window, show_model_window, hide_model_window, quit_app, get_backend_base_url, save_temp_audio_file, get_speech_runtime_status, transcribe_audio_file, load_frontend_memory_file, save_frontend_memory_file, load_frontend_config_file, save_frontend_config_file, load_frontend_history_file, save_frontend_history_file])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

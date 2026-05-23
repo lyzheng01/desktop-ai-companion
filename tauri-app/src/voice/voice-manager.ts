@@ -6,6 +6,8 @@ export class VoiceManager {
   private currentAudio: HTMLAudioElement | null = null
   private enabled = true
   private unlocked = false
+  private currentUtterance: SpeechSynthesisUtterance | null = null
+  private preferredVoice: SpeechSynthesisVoice | null = null
 
   setEnabled(enabled: boolean) {
     this.enabled = enabled
@@ -41,6 +43,10 @@ export class VoiceManager {
   }
 
   stop(): void {
+    if (this.currentUtterance) {
+      window.speechSynthesis.cancel()
+      this.currentUtterance = null
+    }
     if (!this.currentAudio) return
     this.currentAudio.pause()
     this.currentAudio.currentTime = 0
@@ -58,10 +64,46 @@ export class VoiceManager {
       audio.pause()
       audio.currentTime = 0
       this.unlocked = true
+      this.refreshPreferredVoice()
       console.log('[voice] unlocked')
     } catch (error) {
       console.warn('Voice unlock failed:', error)
     }
+  }
+
+  private refreshPreferredVoice(): void {
+    if (!('speechSynthesis' in window)) {
+      this.preferredVoice = null
+      return
+    }
+
+    const voices = window.speechSynthesis.getVoices()
+    const preferred = [...voices]
+      .filter((voice) => /zh|cmn|chinese/i.test(`${voice.lang} ${voice.name}`))
+      .sort((left, right) => this.scoreVoice(right) - this.scoreVoice(left))[0] ?? null
+    this.preferredVoice = preferred
+  }
+
+  private scoreVoice(voice: SpeechSynthesisVoice): number {
+    const label = `${voice.name} ${voice.lang}`.toLowerCase()
+    let score = 0
+    if (voice.lang.toLowerCase().startsWith('zh-cn')) score += 40
+    if (label.includes('xiaoxiao')) score += 30
+    if (label.includes('xiaoyi')) score += 24
+    if (label.includes('female') || label.includes('女')) score += 12
+    if (label.includes('natural')) score += 10
+    if (voice.default) score += 6
+    return score
+  }
+
+  private sanitizeSpokenText(text: string): string {
+    return text
+      .replace(/`+/g, '')
+      .replace(/[*_~>#-]/g, ' ')
+      .replace(/https?:\/\/\S+/g, '这个链接')
+      .replace(/\s+/g, ' ')
+      .replace(/[A-Za-z0-9_]{18,}/g, '这段内容')
+      .trim()
   }
 
   private createSilentWavUrl(durationMs: number): string {
@@ -125,5 +167,70 @@ export class VoiceManager {
       console.warn('Voice playback failed:', error)
       return false
     }
+  }
+
+  async speakText(text: string): Promise<boolean> {
+    if (!this.enabled) return false
+    const sanitized = this.sanitizeSpokenText(text)
+    if (!sanitized) return false
+
+    if (await this.playPhrase(sanitized)) {
+      await this.waitForAudioEnd()
+      return true
+    }
+
+    if (!('speechSynthesis' in window)) {
+      return false
+    }
+
+    this.stop()
+    this.refreshPreferredVoice()
+
+    return await new Promise<boolean>((resolve) => {
+      const utterance = new SpeechSynthesisUtterance(sanitized)
+      utterance.lang = 'zh-CN'
+      utterance.rate = 0.95
+      utterance.pitch = 1.03
+      utterance.volume = 1
+      if (this.preferredVoice) {
+        utterance.voice = this.preferredVoice
+        utterance.lang = this.preferredVoice.lang
+      }
+      this.currentUtterance = utterance
+      utterance.onend = () => {
+        this.currentUtterance = null
+        resolve(true)
+      }
+      utterance.onerror = () => {
+        this.currentUtterance = null
+        resolve(false)
+      }
+      window.speechSynthesis.speak(utterance)
+    })
+  }
+
+  private async waitForAudioEnd(): Promise<void> {
+    const audio = this.currentAudio
+    if (!audio) {
+      return
+    }
+
+    await new Promise<void>((resolve) => {
+      const cleanup = () => {
+        audio.removeEventListener('ended', onEnded)
+        audio.removeEventListener('error', onEnded)
+        if (this.currentAudio === audio) {
+          this.currentAudio = null
+        }
+        resolve()
+      }
+      const onEnded = () => cleanup()
+      if (audio.ended) {
+        cleanup()
+        return
+      }
+      audio.addEventListener('ended', onEnded, { once: true })
+      audio.addEventListener('error', onEnded, { once: true })
+    })
   }
 }

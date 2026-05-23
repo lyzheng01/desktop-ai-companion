@@ -420,6 +420,19 @@ def create_imported_model(name: str, model_path: str, source: str = "imported") 
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
+        "SELECT id FROM imported_models WHERE model_path = ? ORDER BY id ASC LIMIT 1",
+        (model_path,),
+    )
+    existing = cursor.fetchone()
+    if existing is not None:
+        cursor.execute(
+            "UPDATE imported_models SET name = ?, source = ? WHERE id = ?",
+            (name, source, existing["id"]),
+        )
+        conn.commit()
+        conn.close()
+        return existing["id"]
+    cursor.execute(
         """
         INSERT INTO imported_models (name, model_path, source, is_active)
         VALUES (?, ?, ?, 0)

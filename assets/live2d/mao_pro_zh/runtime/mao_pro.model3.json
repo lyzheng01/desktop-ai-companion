@@ -48,22 +48,32 @@
 					"File": "motions/mtn_01.motion3.json"
 				}
 			],
-			"": [
+			"Listen": [
 				{
 					"File": "motions/mtn_02.motion3.json"
-				},
+				}
+			],
+			"Think": [
 				{
 					"File": "motions/mtn_03.motion3.json"
-				},
+				}
+			],
+			"Talk": [
 				{
 					"File": "motions/mtn_04.motion3.json"
-				},
+				}
+			],
+			"React": [
 				{
 					"File": "motions/special_01.motion3.json"
-				},
+				}
+			],
+			"Greet": [
 				{
 					"File": "motions/special_02.motion3.json"
 				},
+			],
+			"Special": [
 				{
 					"File": "motions/special_03.motion3.json"
 				}

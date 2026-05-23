@@ -10,7 +10,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { LogicalSize, PhysicalPosition } from '@tauri-apps/api/dpi';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow';
-import { ApiRequestError, ChatClient, type ChatMessage, type CompanionProfile, type ImportedModelItem } from './chat-client';
+import { ApiRequestError, ChatClient, type CatalogModelInstallResult, type ChatMessage, type CompanionProfile, type ImportedModelItem } from './chat-client';
 import { HIYORI_ACTIONS, HIYORI_ACTION_KEYS, type HiyoriAction } from './hiyori-actions';
 import { VoiceManager } from './voice/voice-manager';
 import type { VoiceAutoPlayMode } from './voice/voice-types';
@@ -30,6 +30,7 @@ type AppSettings = {
     voice_pack: string;
     voice_auto_play_mode: VoiceAutoPlayMode;
     speech_input_enabled: boolean;
+    downloaded_model_keys: string[];
     window_x: number;
     window_y: number;
     window_scale: number;
@@ -76,6 +77,8 @@ type CharacterBehavior = {
     idleGroups: string[];
     tapGroups: string[];
     greetGroups: string[];
+    listenGroups: string[];
+    thinkGroups: string[];
     talkGroups: string[];
     supportsRandomExpression: boolean;
 };
@@ -84,6 +87,26 @@ type CharacterRegion = 'face' | 'chest' | 'arms' | 'belly' | 'legs';
 type HiyoriActionHandler = () => void;
 type CompanionState = 'idle' | 'listening' | 'thinking' | 'searching' | 'composing' | 'talking' | 'sleeping';
 type ProactiveTriggerType = 'morning_greeting' | 'night_greeting' | 'long_work_session' | 'meal_time' | 'weather_update' | 'care_followup';
+type ReplyEmotion = 'calm' | 'happy' | 'shy' | 'concerned' | 'serious';
+type SendMessageOptions = {
+    textOverride?: string;
+    autoVoiceReply?: boolean;
+    continueConversation?: boolean;
+};
+
+type SpeechRuntimeStatus = {
+    available: boolean;
+    error?: string;
+    runtime_dir?: string;
+    cli_path?: string;
+    model_path?: string;
+};
+
+type CompanionStateRequest = {
+    type: 'listening' | 'thinking' | 'speaking' | 'idle';
+    emotion?: ReplyEmotion;
+    text?: string;
+};
 
 let app: PIXI.Application;
 let currentModel: any = null;
@@ -143,6 +166,9 @@ let forceUpdateRequired = false;
 let pendingReleaseManifest: ReleaseManifest | null = null;
 const voiceManager = new VoiceManager();
 let speechRecordingState: 'idle' | 'recording' | 'transcribing' = 'idle';
+let speechConversationActive = false;
+let speechConversationRestartTimer: number | null = null;
+const pendingCatalogDownloads = new Set<string>();
 const speechInputManager = new SpeechInputManager({
     onStateChange: (state) => {
         speechRecordingState = state;
@@ -196,15 +222,19 @@ let currentCharacter = 'mao_pro_zh';
 const characterBehaviors: Record<string, CharacterBehavior> = {
     mao_pro_zh: {
         idleGroups: ['Idle'],
-        tapGroups: ['Tap', 'Tap@Body'],
-        greetGroups: ['Flick', 'Flick@Body'],
-        talkGroups: ['Idle', 'FlickUp', 'FlickDown'],
+        tapGroups: ['React', 'Special'],
+        greetGroups: ['Greet', 'React'],
+        listenGroups: ['Listen', 'Idle'],
+        thinkGroups: ['Think', 'Idle'],
+        talkGroups: ['Talk', 'Idle'],
         supportsRandomExpression: false,
     },
     chitose: {
         idleGroups: ['Idle'],
         tapGroups: ['Tap'],
         greetGroups: ['Flick'],
+        listenGroups: ['Idle'],
+        thinkGroups: ['Idle'],
         talkGroups: ['Idle', 'Tap'],
         supportsRandomExpression: true,
     },
@@ -212,6 +242,8 @@ const characterBehaviors: Record<string, CharacterBehavior> = {
         idleGroups: ['Idle'],
         tapGroups: ['Tap', 'Tap@Body'],
         greetGroups: ['Flick', 'Flick@Body'],
+        listenGroups: ['Idle'],
+        thinkGroups: ['Idle'],
         talkGroups: ['Idle', 'FlickUp', 'FlickDown'],
         supportsRandomExpression: false,
     },
@@ -219,6 +251,8 @@ const characterBehaviors: Record<string, CharacterBehavior> = {
         idleGroups: ['idle'],
         tapGroups: ['tap'],
         greetGroups: ['greet'],
+        listenGroups: ['idle'],
+        thinkGroups: ['idle'],
         talkGroups: ['idle'],
         supportsRandomExpression: true,
     },
@@ -226,6 +260,8 @@ const characterBehaviors: Record<string, CharacterBehavior> = {
         idleGroups: ['Idle'],
         tapGroups: ['Tap', 'Tap@Body'],
         greetGroups: ['Flick', 'Flick@Body'],
+        listenGroups: ['Idle'],
+        thinkGroups: ['Idle'],
         talkGroups: ['Idle', 'FlickUp', 'FlickDown'],
         supportsRandomExpression: false,
     },
@@ -273,6 +309,7 @@ let appSettings: AppSettings = {
     voice_pack: 'warm-female',
     voice_auto_play_mode: 'phrases-only',
     speech_input_enabled: true,
+    downloaded_model_keys: [],
     window_x: 100,
     window_y: 100,
     window_scale: 1,
@@ -690,9 +727,10 @@ async function triggerProactivePreview(trigger: ProactiveTriggerType) {
 }
 
 function setCompanionState(state: CompanionState) {
+    const previousState = document.body.dataset.companionState as CompanionState | undefined;
     document.body.dataset.companionState = state;
     console.log(`COMPANION_STATE: ${state}`);
-    updateCompanionStateFeedback(state);
+    updateCompanionStateFeedback(state, previousState);
     updateChatStatus(state);
 }
 
@@ -720,11 +758,15 @@ function updateChatStatus(state: CompanionState) {
     status.classList.add('visible');
 }
 
-function updateCompanionStateFeedback(state: CompanionState) {
+function updateCompanionStateFeedback(state: CompanionState, previousState?: CompanionState) {
+    const stateChanged = previousState !== state;
     if (state === 'sleeping') {
         showPersistentIndicator('晚安模式');
         if (currentModel) {
             animateHeadTilt(-0.08, -10, 900);
+        }
+        if (stateChanged) {
+            void playExpressionByCandidates(getStateExpressionCandidates(state));
         }
         stateIndicatorMode = state;
         return;
@@ -732,17 +774,26 @@ function updateCompanionStateFeedback(state: CompanionState) {
 
     if (state === 'searching') {
         showPersistentIndicator('正在查询');
-        animateFocus(app.screen.width * 0.58, app.screen.height * 0.24, 900);
-        void playRandomExpression();
+        if (app?.screen) {
+            animateFocus(app.screen.width * 0.58, app.screen.height * 0.24, 900);
+        }
+        if (stateChanged) {
+            void playExpressionByCandidates(getStateExpressionCandidates(state));
+        }
         stateIndicatorMode = state;
         return;
     }
 
     if (state === 'composing') {
         showPersistentIndicator('整理回答');
-        animateFocus(app.screen.width * 0.46, app.screen.height * 0.22, 900);
+        if (app?.screen) {
+            animateFocus(app.screen.width * 0.46, app.screen.height * 0.22, 900);
+        }
         if (currentModel) {
             animateHeadTilt(-0.1, -14, 700);
+        }
+        if (stateChanged) {
+            void playExpressionByCandidates(getStateExpressionCandidates(state));
         }
         stateIndicatorMode = state;
         return;
@@ -752,6 +803,23 @@ function updateCompanionStateFeedback(state: CompanionState) {
         showPersistentIndicator('想一下');
         if (currentModel) {
             animateHeadTilt(-0.12, -18, 760);
+        }
+        if (stateChanged) {
+            void playExpressionByCandidates(getStateExpressionCandidates(state));
+            void playMotionFromGroups(getCurrentBehavior().thinkGroups);
+        }
+        stateIndicatorMode = state;
+        return;
+    }
+
+    if (state === 'listening') {
+        showPersistentIndicator('在听你说');
+        if (app?.screen) {
+            animateFocus(app.screen.width * 0.5, app.screen.height * 0.24, 1000);
+        }
+        if (stateChanged) {
+            void playExpressionByCandidates(getStateExpressionCandidates(state));
+            void playMotionFromGroups(getCurrentBehavior().listenGroups);
         }
         stateIndicatorMode = state;
         return;
@@ -782,6 +850,9 @@ async function loadAppSettings(options: {
             voice_pack: data.voice_pack ?? 'warm-female',
             voice_auto_play_mode: data.voice_auto_play_mode ?? 'phrases-only',
             speech_input_enabled: data.speech_input_enabled ?? true,
+            downloaded_model_keys: Array.isArray(data.downloaded_model_keys)
+                ? data.downloaded_model_keys.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+                : [],
             window_x: data.window_x ?? 100,
             window_y: data.window_y ?? 100,
             window_scale: data.window_scale ?? 1,
@@ -803,7 +874,10 @@ async function loadAppSettings(options: {
             applyActiveCompanion(bootstrapActiveCompanion);
         }
 
-        currentCharacter = live2dModels[appSettings.character_type] ? appSettings.character_type : 'mao_pro_zh';
+        const nextCharacter = appSettings.character_type;
+        currentCharacter = live2dModels[nextCharacter] || nextCharacter.startsWith('imported:')
+            ? nextCharacter
+            : 'mao_pro_zh';
     } catch (error) {
         console.warn('Failed to load config, using defaults.', error);
     }
@@ -892,17 +966,25 @@ function updateSpeechInputButton() {
         return;
     }
     button.disabled = false;
+    if (speechConversationActive && speechRecordingState === 'idle') {
+        button.textContent = '结束语音模式';
+        if (overlay) {
+            overlay.textContent = '语音模式已开启，正在等待你说话';
+            overlay.classList.add('visible');
+        }
+        return;
+    }
     if (speechRecordingState === 'recording') {
-        button.textContent = '录音中';
+        button.textContent = speechConversationActive ? '正在听你说' : '录音中';
         button.classList.add('recording');
         if (overlay) {
-            overlay.textContent = '正在录音，点击结束';
+            overlay.textContent = speechConversationActive ? '正在听你说，停顿后会自动发送' : '正在录音，点击结束';
             overlay.classList.add('visible');
         }
         return;
     }
     if (speechRecordingState === 'transcribing') {
-        button.textContent = '识别中';
+        button.textContent = speechConversationActive ? '识别并发送中' : '识别中';
         button.disabled = true;
         button.classList.add('transcribing');
         if (overlay) {
@@ -911,7 +993,7 @@ function updateSpeechInputButton() {
         }
         return;
     }
-    button.textContent = '语音';
+    button.textContent = '语音模式';
     overlay?.classList.remove('visible');
     if (overlay) overlay.textContent = '';
 }
@@ -945,6 +1027,21 @@ function getInstalledCatalogModelKey(modelPath: string, catalogKeys: Set<string>
         }
     }
     return null;
+}
+
+function findImportedModelByCatalogInstallResult(
+    importedModels: ImportedModelItem[],
+    installResult: CatalogModelInstallResult,
+): ImportedModelItem | null {
+    return importedModels.find((model) => model.model_path === installResult.model_path) ?? null;
+}
+
+function markCatalogModelDownloaded(modelKey: string) {
+    if (appSettings.downloaded_model_keys.includes(modelKey)) {
+        return;
+    }
+    appSettings.downloaded_model_keys = [...appSettings.downloaded_model_keys, modelKey];
+    void saveAppSettings();
 }
 
 function getGeneratedPreviewPath(modelKey: string) {
@@ -1360,6 +1457,69 @@ function getInteractionModeLabel(mode: string) {
 
 function getCurrentBehavior() {
     return characterBehaviors[currentCharacter] ?? characterBehaviors.mao_pro_zh;
+}
+
+function classifyReplyEmotion(text: string): ReplyEmotion {
+    const normalized = text.trim();
+    if (!normalized) {
+        return 'calm';
+    }
+
+    const matches = (patterns: RegExp[]) => patterns.some((pattern) => pattern.test(normalized));
+
+    if (matches([/哈哈/, /嘿嘿/, /好耶/, /太好了/, /开心/, /喜欢/, /真棒/, /太可爱/])) {
+        return 'happy';
+    }
+    if (matches([/欸/, /诶/, /那个/, /有点/, /嗯\.\.\./, /不好意思/, /脸红/, /会不会/])) {
+        return 'shy';
+    }
+    if (matches([/没关系/, /别担心/, /辛苦了/, /抱抱/, /先休息/, /照顾好自己/, /慢慢来/, /我陪你/])) {
+        return 'concerned';
+    }
+    if (matches([/不行/, /不能/, /应该/, /需要注意/, /最好/, /建议你/, /先确认/, /要小心/])) {
+        return 'serious';
+    }
+
+    return 'calm';
+}
+
+function getReplyEmotionExpressionCandidates(emotion: ReplyEmotion): string[] {
+    if (currentCharacter === 'mao_pro_zh') {
+        switch (emotion) {
+            case 'happy':
+                return ['exp_04', 'exp_02'];
+            case 'shy':
+                return ['exp_06', 'exp_01'];
+            case 'concerned':
+                return ['exp_05', 'exp_07'];
+            case 'serious':
+                return ['exp_08', 'exp_07'];
+            case 'calm':
+            default:
+                return ['exp_01', 'exp_03'];
+        }
+    }
+
+    return [];
+}
+
+function getStateExpressionCandidates(state: CompanionState): string[] {
+    if (currentCharacter === 'mao_pro_zh') {
+        switch (state) {
+            case 'listening':
+                return ['exp_01', 'exp_06'];
+            case 'thinking':
+            case 'searching':
+            case 'composing':
+                return ['exp_07', 'exp_05'];
+            case 'sleeping':
+                return ['exp_03', 'exp_01'];
+            default:
+                return [];
+        }
+    }
+
+    return [];
 }
 
 function isHiyoriCharacter() {
@@ -1813,6 +1973,17 @@ function bindCompanionSettingsForm() {
     const speechInputEnabledInput = document.getElementById('speech-input-enabled-input') as HTMLInputElement | null;
     speechInputEnabledInput?.addEventListener('change', () => {
         appSettings.speech_input_enabled = speechInputEnabledInput.checked;
+        if (!appSettings.speech_input_enabled && speechConversationActive) {
+            void stopSpeechConversationMode();
+        }
+        if (isSettingsStandaloneWindow()) {
+            void getCurrentWebviewWindow().emitTo('main', 'voice-settings-requested', {
+                voice_enabled: appSettings.voice_enabled,
+                voice_pack: appSettings.voice_pack,
+                voice_auto_play_mode: appSettings.voice_auto_play_mode,
+                speech_input_enabled: appSettings.speech_input_enabled,
+            });
+        }
         updateSpeechInputButton();
         void saveAppSettings();
     });
@@ -2602,7 +2773,7 @@ function scheduleIdleLoop() {
     }, nextDelay);
 }
 
-function startTalkingAnimation(text: string) {
+function startTalkingAnimation(text: string, emotion: ReplyEmotion = 'calm') {
     const duration = Math.min(5000, Math.max(900, text.length * 90));
 
     if (talkLoopTimer !== null) {
@@ -2628,8 +2799,8 @@ function startTalkingAnimation(text: string) {
     live2dDebugState.talkingActive = true;
 
     const behavior = getCurrentBehavior();
+    void playExpressionByCandidates(getReplyEmotionExpressionCandidates(emotion));
     void playMotionFromGroups(behavior.talkGroups);
-    void playRandomExpression();
 
     talkLoopTimer = window.setInterval(() => {
         setLipSyncValue(0.2 + Math.random() * 0.8);
@@ -2667,7 +2838,9 @@ function syncAmbientCompanionMode() {
 async function triggerCharacterAttention() {
     const behavior = getCurrentBehavior();
     await playMotionFromGroups(behavior.tapGroups.length > 0 ? behavior.tapGroups : behavior.greetGroups);
-    animateFocus(app.screen.width * 0.5, app.screen.height * 0.28, 1200);
+    if (app?.screen) {
+        animateFocus(app.screen.width * 0.5, app.screen.height * 0.28, 1200);
+    }
 }
 
 function detectCharacterRegion(localX: number, localY: number, width: number, height: number): CharacterRegion {
@@ -2703,7 +2876,7 @@ async function triggerFaceReaction() {
     } else if (isHiyoriCharacter()) {
         // Keep region click feedback, but disable Hiyori action playback for now.
     } else {
-        await playMotionByCandidates(['']);
+        await playMotionFromGroups(getCurrentBehavior().tapGroups);
         setLipSyncValue(0.35);
         window.setTimeout(() => setLipSyncValue(0), 260);
     }
@@ -2720,7 +2893,7 @@ async function triggerChestReaction() {
     } else if (isHiyoriCharacter()) {
         // Keep region click feedback, but disable Hiyori action playback for now.
     } else {
-        await playMotionByCandidates(['']);
+        await playMotionFromGroups(getCurrentBehavior().tapGroups);
     }
     animateFocus(app.screen.width * 0.5, app.screen.height * 0.34, 1400);
 }
@@ -2735,7 +2908,7 @@ async function triggerArmsReaction() {
     } else if (isHiyoriCharacter()) {
         // Keep region click feedback, but disable Hiyori action playback for now.
     } else {
-        await playMotionByCandidates(['']);
+        await playMotionFromGroups(getCurrentBehavior().tapGroups);
     }
     animateFocus(app.screen.width * 0.56, app.screen.height * 0.36, 1200);
 }
@@ -2750,7 +2923,7 @@ async function triggerBellyReaction() {
     } else if (isHiyoriCharacter()) {
         // Keep region click feedback, but disable Hiyori action playback for now.
     } else {
-        await playMotionByCandidates(['']);
+        await playMotionFromGroups(getCurrentBehavior().tapGroups);
         setLipSyncValue(0.55);
         window.setTimeout(() => setLipSyncValue(0), 320);
     }
@@ -2767,7 +2940,7 @@ async function triggerLegsReaction() {
     } else if (isHiyoriCharacter()) {
         // Keep region click feedback, but disable Hiyori action playback for now.
     } else {
-        await playMotionByCandidates(['']);
+        await playMotionFromGroups(getCurrentBehavior().tapGroups);
     }
     animateFocus(app.screen.width * 0.5, app.screen.height * 0.62, 1000);
 }
@@ -2893,8 +3066,7 @@ window.__desktopCompanionDebug = {
         if (!input) {
             return;
         }
-        input.value = text;
-        await sendMessage();
+        await sendMessage({ textOverride: text });
     },
     showBubble: (text: string) => {
         showReactionBubble(text);
@@ -2994,6 +3166,10 @@ async function enterDesktopFlow() {
 }
 
 async function loadLive2DModel() {
+    if (!live2dModels[currentCharacter] && currentCharacter.startsWith('imported:')) {
+        const imported = await chatClient.loadImportedModels();
+        syncImportedModelRegistry(imported);
+    }
     const modelPath = resolveModelAssetPath(live2dModels[currentCharacter] ?? live2dModels.mao_pro_zh);
 
     try {
@@ -3035,7 +3211,7 @@ async function loadLive2DModel() {
         console.log('✅ Live2D 模型加载成功');
     } catch (error) {
         console.error('❌ Live2D 模型加载失败:', error);
-        if (currentCharacter !== 'mao_pro_zh') {
+        if (currentCharacter !== 'mao_pro_zh' && !currentCharacter.startsWith('imported:')) {
             console.warn('Falling back to packaged default model after load failure.', currentCharacter);
             currentCharacter = 'mao_pro_zh';
             appSettings.character_type = currentCharacter;
@@ -3043,7 +3219,7 @@ async function loadLive2DModel() {
             return;
         }
         // 降级方案：显示占位角色
-        showPlaceholderCharacter();
+        throw error instanceof Error ? error : new Error(String(error));
     }
 }
 
@@ -3185,6 +3361,9 @@ async function openChat() {
 }
 
 function closeChat() {
+    if (speechConversationActive) {
+        void stopSpeechConversationMode();
+    }
     if (isChatStandaloneWindow()) {
         chatWindowVisible = false;
         void invoke('hide_chat_window');
@@ -3251,11 +3430,130 @@ function toggleChat() {
     }
 }
 
-async function sendMessage() {
+function clearSpeechConversationRestartTimer() {
+    if (speechConversationRestartTimer !== null) {
+        window.clearTimeout(speechConversationRestartTimer);
+        speechConversationRestartTimer = null;
+    }
+}
+
+function scheduleSpeechConversationRestart(delay = 320) {
+    if (!speechConversationActive) {
+        return;
+    }
+    clearSpeechConversationRestartTimer();
+    speechConversationRestartTimer = window.setTimeout(() => {
+        speechConversationRestartTimer = null;
+        void startSpeechConversationListening();
+    }, delay);
+}
+
+async function stopSpeechConversationMode() {
+    speechConversationActive = false;
+    clearSpeechConversationRestartTimer();
+    await speechInputManager.cancel();
+    setCompanionState('idle');
+    updateSpeechInputButton();
+}
+
+async function ensureSpeechRuntimeAvailable() {
+    const status = await invoke<SpeechRuntimeStatus>('get_speech_runtime_status');
+    if (status.available) {
+        return true;
+    }
+
+    const runtimeDir = status.runtime_dir ? `\n\n请将语音组件放到：\n${status.runtime_dir}` : '';
+    const expectedFiles = status.cli_path || status.model_path
+        ? `\n\n需要文件：\n- ${status.cli_path ?? 'whisper-cli.exe'}\n- ${status.model_path ?? 'ggml-base.bin'}`
+        : '';
+    window.alert(`本地语音组件未安装：${status.error ?? '请先安装语音识别组件。'}${runtimeDir}${expectedFiles}`);
+    return false;
+}
+
+async function startSpeechConversationListening() {
+    if (!speechConversationActive || !appSettings.speech_input_enabled || speechRecordingState !== 'idle') {
+        updateSpeechInputButton();
+        return;
+    }
+
+    try {
+        const text = await speechInputManager.startContinuousCapture();
+        if (!speechConversationActive) {
+            return;
+        }
+        if (!text.trim()) {
+            const overlay = document.getElementById('speech-status-overlay');
+            if (overlay) {
+                overlay.textContent = '这次没有识别到有效语音，请再说一次';
+                overlay.classList.add('visible');
+            }
+            scheduleSpeechConversationRestart();
+            return;
+        }
+        console.log('[speech-conversation] recognized text:', text);
+        await sendMessage({
+            textOverride: text.trim(),
+            autoVoiceReply: true,
+            continueConversation: true,
+        });
+    } catch (error) {
+        if (!speechConversationActive) {
+            return;
+        }
+        console.error('Continuous speech conversation failed.', error);
+        const message = error instanceof Error ? error.message : String(error);
+        window.alert(`语音模式失败：${message}`);
+        await stopSpeechConversationMode();
+    }
+}
+
+async function startSpeechConversationMode() {
+    if (speechConversationActive) {
+        return;
+    }
+    if (!(await ensureSpeechRuntimeAvailable())) {
+        updateSpeechInputButton();
+        return;
+    }
+    speechConversationActive = true;
+    updateSpeechInputButton();
+    await startSpeechConversationListening();
+}
+
+async function emitCompanionStateRequest(payload: CompanionStateRequest) {
+    if (isChatStandaloneWindow()) {
+        await getCurrentWebviewWindow().emitTo('main', 'companion-state-requested', payload);
+        return;
+    }
+
+    applyCompanionStateRequest(payload);
+}
+
+function applyCompanionStateRequest(payload: CompanionStateRequest) {
+    if (payload.type === 'listening') {
+        setCompanionState('listening');
+        return;
+    }
+    if (payload.type === 'thinking') {
+        setCompanionState('thinking');
+        return;
+    }
+    if (payload.type === 'speaking') {
+        if (payload.text?.trim()) {
+            startTalkingAnimation(payload.text, payload.emotion ?? 'calm');
+        } else {
+            setCompanionState('talking');
+        }
+        return;
+    }
+    setCompanionState('idle');
+}
+
+async function sendMessage(options: SendMessageOptions = {}) {
     const input = document.getElementById('chat-input') as HTMLTextAreaElement;
     if (!input) return;
 
-    const text = input.value.trim();
+    const text = (options.textOverride ?? input.value).trim();
     if (!text) return;
     if (!ensureBusinessAllowed('聊天发送')) return;
 
@@ -3265,21 +3563,29 @@ async function sendMessage() {
     appendFrontendHistory('user', text);
 
     setCompanionState('listening');
+    void emitCompanionStateRequest({ type: 'listening' });
     addMessage('user', text);
     logProductEvent('message_sent', { length: text.length, character: currentCharacter });
     void triggerCharacterAttention();
+    let assistantMessageContent: HTMLDivElement | null = null;
 
     try {
         setCompanionState('thinking');
+        void emitCompanionStateRequest({ type: 'thinking' });
         let assistantContent = '';
-        let assistantMessageContent = addLoadingAssistantMessage();
+        assistantMessageContent = addLoadingAssistantMessage();
         const memoryAcknowledgement = buildMemoryAcknowledgement(memoryCandidates);
+        let emittedSpeakingState = false;
 
         const finalContent = await chatClient.streamAndYield(
             text,
             (chunk) => {
                 setAssistantMessageLoading(assistantMessageContent, false);
                 setCompanionState('talking');
+                if (!emittedSpeakingState) {
+                    emittedSpeakingState = true;
+                    void emitCompanionStateRequest({ type: 'speaking' });
+                }
                 assistantContent += chunk;
                 assistantMessageContent.textContent = assistantContent;
                 scrollChatToBottom();
@@ -3296,6 +3602,7 @@ async function sendMessage() {
             assistantMessageContent.textContent = finalContent;
         }
         appendFrontendHistory('assistant', finalContent);
+        const replyEmotion = classifyReplyEmotion(finalContent);
         if (memoryAcknowledgement) {
             const ackDiv = addMessage('assistant', memoryAcknowledgement);
             if (ackDiv) {
@@ -3306,12 +3613,26 @@ async function sendMessage() {
             }
         }
         void refreshMemoryList();
-        startTalkingAnimation(finalContent);
+        startTalkingAnimation(finalContent, replyEmotion);
+        void emitCompanionStateRequest({ type: 'speaking', emotion: replyEmotion, text: finalContent });
+        if (options.autoVoiceReply && appSettings.voice_enabled) {
+            await voiceManager.speakText(finalContent);
+        }
+        if (options.continueConversation) {
+            scheduleSpeechConversationRestart(420);
+        }
+        return finalContent;
     } catch (error) {
         console.error('❌ 发送消息失败:', error);
         setCompanionState('idle');
+        void emitCompanionStateRequest({ type: 'idle' });
+        setAssistantMessageLoading(assistantMessageContent, false);
+        assistantMessageContent?.remove();
         addMessage('assistant', '抱歉，我遇到了一些问题，请稍后再试。');
         appendFrontendHistory('assistant', '抱歉，我遇到了一些问题，请稍后再试。');
+        if (options.continueConversation) {
+            scheduleSpeechConversationRestart(900);
+        }
     }
 }
 
@@ -3324,32 +3645,13 @@ function bindSpeechInputButton() {
         if (!appSettings.speech_input_enabled) {
             return;
         }
-        const input = document.getElementById('chat-input') as HTMLTextAreaElement | null;
-        if (!input) {
-            return;
-        }
 
-        try {
-            if (speechRecordingState === 'idle') {
-                await speechInputManager.start();
-                return;
-            }
-            if (speechRecordingState === 'recording') {
-                const text = await speechInputManager.stopAndTranscribe();
-                if (text.trim()) {
-                    input.value = text.trim();
-                    input.focus();
-                } else {
-                    window.alert('没有识别到有效语音，请再说一次。');
-                }
-            }
-        } catch (error) {
-            console.error('Speech input failed.', error);
-            speechRecordingState = 'idle';
-            updateSpeechInputButton();
-            const message = error instanceof Error ? error.message : String(error);
-            window.alert(`本地语音识别失败：${message}`);
+        if (speechConversationActive) {
+            await stopSpeechConversationMode();
+        } else {
+            await startSpeechConversationMode();
         }
+        return;
     });
 }
 
@@ -3563,7 +3865,9 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
     list.innerHTML = '';
     const catalogKeys = new Set(catalog.map((model) => model.key));
     const catalogNameSet = new Set(catalog.map((model) => model.name));
-    const builtinIdentitySet = new Set(Object.keys(live2dModels).map((key) => normalizeModelIdentity(getCharacterDisplayName(key))));
+    const builtinIdentitySet = new Set(
+        Array.from(PACKAGED_BUILTIN_MODEL_KEYS).map((key) => normalizeModelIdentity(getCharacterDisplayName(key))),
+    );
     const catalogIdentitySet = new Set(catalog.map((model) => normalizeModelIdentity(model.name)));
 
     Object.keys(live2dModels)
@@ -3591,14 +3895,28 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
         });
         const installedModelKey = installedModel ? getImportedModelKey(installedModel) : null;
         const isCurrentInstalledModel = installedModelKey === currentCharacter;
-        const isInstalled = Boolean(installedModel);
+        const isDownloadedForFrontend = appSettings.downloaded_model_keys.includes(model.key);
+        const isInstalling = pendingCatalogDownloads.has(model.key);
 
         let detailText = '先下载，下载完成后即可切换';
         let buttonText = '下载使用';
         let buttonDisabled = false;
         let onClick = async () => {
-            await chatClient.installCatalogModel(model.key);
+            pendingCatalogDownloads.add(model.key);
             await refreshModelPanel();
+            try {
+                const installResult = await chatClient.installCatalogModel(model.key);
+                markCatalogModelDownloaded(model.key);
+                const refreshedImported = await chatClient.loadImportedModels();
+                syncImportedModelRegistry(refreshedImported);
+                const installed = findImportedModelByCatalogInstallResult(refreshedImported, installResult);
+                if (!installed) {
+                    throw new Error(`安装完成但未找到导入模型记录：${model.name}`);
+                }
+            } finally {
+                pendingCatalogDownloads.delete(model.key);
+                await refreshModelPanel();
+            }
         };
 
         if (isCurrentInstalledModel) {
@@ -3606,7 +3924,12 @@ async function renderAvailableModelList(importedModels: ImportedModelItem[] = []
             buttonText = '当前使用中';
             buttonDisabled = true;
             onClick = () => undefined;
-        } else if (isInstalled && installedModelKey) {
+        } else if (isInstalling) {
+            detailText = '模型下载中，请稍候';
+            buttonText = '下载中';
+            buttonDisabled = true;
+            onClick = () => undefined;
+        } else if (isDownloadedForFrontend && installedModelKey) {
             detailText = '已下载，可切换使用';
             buttonText = '切换';
             onClick = () => {
@@ -3690,7 +4013,12 @@ async function requestCharacterSwitch(modelKey: string) {
         return;
     }
 
-    switchCharacter(modelKey);
+    const previousCharacter = currentCharacter;
+    const ok = await switchCharacterAndWait(modelKey);
+    if (!ok) {
+        currentCharacter = previousCharacter;
+        window.alert(`切换模型失败：${getCharacterDisplayName(modelKey)} 暂时无法加载。`);
+    }
     void refreshModelPanel();
 }
 
@@ -3708,6 +4036,9 @@ function closeModelPanel() {
 
 async function initializeStandaloneChatWindow() {
     document.body.dataset.windowLabel = 'chat';
+    await loadAppSettings({ preserveBootstrapCompanion: true });
+    updateChatTitle();
+    updateSpeechInputButton();
     const chatWindow = document.getElementById('chat-window');
     if (chatWindow) {
         chatWindow.classList.add('visible');
@@ -3778,6 +4109,7 @@ async function initializeStandaloneSettingsWindow() {
         voice_enabled?: boolean;
         voice_pack?: string;
         voice_auto_play_mode?: VoiceAutoPlayMode;
+        speech_input_enabled?: boolean;
     }>('voice-settings-updated', async (event) => {
         const payload = event.payload || {};
         if (typeof payload.voice_enabled === 'boolean') {
@@ -3789,7 +4121,11 @@ async function initializeStandaloneSettingsWindow() {
         if (payload.voice_auto_play_mode === 'off' || payload.voice_auto_play_mode === 'phrases-only' || payload.voice_auto_play_mode === 'all') {
             appSettings.voice_auto_play_mode = payload.voice_auto_play_mode;
         }
+        if (typeof payload.speech_input_enabled === 'boolean') {
+            appSettings.speech_input_enabled = payload.speech_input_enabled;
+        }
         syncCompanionSettingsForm();
+        updateSpeechInputButton();
     });
 
     bindStandaloneWindowDrag('.settings-header', '#settings-panel');
@@ -3884,13 +4220,19 @@ async function switchCharacterAndWait(name: string) {
     console.log('🎭 切换角色并等待加载:', name);
     hideContextMenu();
     if (!live2dModels[name]) {
+        if (name.startsWith('imported:')) {
+            const imported = await chatClient.loadImportedModels();
+            syncImportedModelRegistry(imported);
+        }
+    }
+    if (!live2dModels[name]) {
         console.warn('Unknown Live2D character:', name);
         return false;
     }
 
     currentCharacter = name;
     await loadLive2DModel();
-    void saveAppSettings();
+    await saveAppSettings();
     return true;
 }
 
@@ -3966,6 +4308,12 @@ document.addEventListener('keydown', (e) => {
             e.preventDefault();
             sendMessage();
         }
+    }
+});
+
+window.addEventListener('beforeunload', () => {
+    if (speechConversationActive) {
+        void stopSpeechConversationMode();
     }
 });
 
@@ -4132,7 +4480,12 @@ window.addEventListener('DOMContentLoaded', async () => {
             if (!modelKey) {
                 return;
             }
-            switchCharacter(modelKey);
+            const previousCharacter = currentCharacter;
+            const ok = await switchCharacterAndWait(modelKey);
+            if (!ok) {
+                currentCharacter = previousCharacter;
+                window.alert(`切换模型失败：${getCharacterDisplayName(modelKey)} 暂时无法加载。`);
+            }
             await refreshModelPanel();
             await getCurrentWebviewWindow().emitTo('model', 'model-switched', { modelKey });
             await getCurrentWindow().show();
@@ -4146,10 +4499,18 @@ window.addEventListener('DOMContentLoaded', async () => {
             await setScale(nextScale, event.payload?.persist !== false);
             await getCurrentWebviewWindow().emitTo('settings', 'scale-updated', { scale: currentScale });
         });
+        await getCurrentWebviewWindow().listen<CompanionStateRequest>('companion-state-requested', async (event) => {
+            const payload = event.payload;
+            if (!payload) {
+                return;
+            }
+            applyCompanionStateRequest(payload);
+        });
         await getCurrentWebviewWindow().listen<{
             voice_enabled?: boolean;
             voice_pack?: string;
             voice_auto_play_mode?: VoiceAutoPlayMode;
+            speech_input_enabled?: boolean;
         }>('voice-settings-requested', async (event) => {
             const payload = event.payload || {};
             if (typeof payload.voice_enabled === 'boolean') {
@@ -4160,6 +4521,9 @@ window.addEventListener('DOMContentLoaded', async () => {
             }
             if (payload.voice_auto_play_mode === 'off' || payload.voice_auto_play_mode === 'phrases-only' || payload.voice_auto_play_mode === 'all') {
                 appSettings.voice_auto_play_mode = payload.voice_auto_play_mode;
+            }
+            if (typeof payload.speech_input_enabled === 'boolean') {
+                appSettings.speech_input_enabled = payload.speech_input_enabled;
             }
 
             voiceManager.setEnabled(appSettings.voice_enabled);
@@ -4174,6 +4538,13 @@ window.addEventListener('DOMContentLoaded', async () => {
                 voice_enabled: appSettings.voice_enabled,
                 voice_pack: appSettings.voice_pack,
                 voice_auto_play_mode: appSettings.voice_auto_play_mode,
+                speech_input_enabled: appSettings.speech_input_enabled,
+            });
+            await getCurrentWebviewWindow().emitTo('chat', 'voice-settings-updated', {
+                voice_enabled: appSettings.voice_enabled,
+                voice_pack: appSettings.voice_pack,
+                voice_auto_play_mode: appSettings.voice_auto_play_mode,
+                speech_input_enabled: appSettings.speech_input_enabled,
             });
         });
         if (firstRunRequired) {

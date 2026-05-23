@@ -194,13 +194,6 @@ MODEL_CATALOG = [
         "builtin": False,
     },
     {
-        "key": "catalog-wanderer",
-        "name": "Wanderer",
-        "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "散兵-流浪者免费模型---散兵-model3---1",
-        "preview_path": "/model-previews/builtin/catalog-wanderer.png",
-        "builtin": False,
-    },
-    {
         "key": "catalog-changli",
         "name": "Changli",
         "source_dir": PROJECT_ROOT / "assets" / "live2d" / "imported" / "长离带水印---长离-model3---1",

@@ -51,6 +51,13 @@ export interface CatalogModelItem {
     installed: boolean;
 }
 
+export interface CatalogModelInstallResult {
+    status: string;
+    id: number;
+    model_path: string;
+    key: string;
+}
+
 export interface DataDirInfo {
     data_dir: string;
 }
@@ -337,7 +344,7 @@ export class ChatClient {
         }
     }
 
-    public async installCatalogModel(modelKey: string): Promise<void> {
+    public async installCatalogModel(modelKey: string): Promise<CatalogModelInstallResult> {
         const response = await fetch(this.getEndpointUrl('models-catalog-install'), {
             method: 'POST',
             headers: this.buildRequestHeaders(),
@@ -346,6 +353,7 @@ export class ChatClient {
         if (!response.ok) {
             throw await this.buildApiRequestError('Install catalog model failed', response);
         }
+        return await response.json() as CatalogModelInstallResult;
     }
 
     public async loadDataDir(): Promise<DataDirInfo> {
