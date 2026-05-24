@@ -1,5 +1,8 @@
 import hashlib
+import logging
 import os
+import re
+import unicodedata
 from pathlib import Path
 from typing import Optional
 
@@ -43,6 +46,7 @@ VOICE_MAP = {
 }
 
 app = FastAPI(title="Desktop AI Companion TTS Server")
+logger = logging.getLogger("desktop-ai-companion-tts")
 
 
 def build_cache_key(text: str, voice: str, emotion: str, fmt: str) -> str:
@@ -52,6 +56,30 @@ def build_cache_key(text: str, voice: str, emotion: str, fmt: str) -> str:
 
 def sanitize_text(text: str) -> str:
     return " ".join(text.strip().split()).replace("\n", " ").replace("\r", " ")
+
+
+def normalize_tts_text(text: str, max_length: int = 120) -> str:
+    sanitized = sanitize_text(text)
+    sanitized = re.sub(r"https?://\S+", "这个链接", sanitized)
+    sanitized = sanitized.replace("```", " ").replace("`", " ")
+    sanitized = re.sub(r"[*_~#>\[\]\(\)\{\}|\\]+", " ", sanitized)
+    sanitized = re.sub(r"\b[A-Za-z0-9_]{18,}\b", "这段内容", sanitized)
+
+    allowed = []
+    for char in sanitized:
+        category = unicodedata.category(char)
+        if category.startswith("C"):
+            continue
+        if category == "So":
+            continue
+        allowed.append(char)
+
+    sanitized = "".join(allowed)
+    sanitized = re.sub(r"[^\u4e00-\u9fffA-Za-z0-9，。！？；：、“”‘’（）《》,.!?:;()\-\s]", " ", sanitized)
+    sanitized = re.sub(r"\s+", " ", sanitized).strip()
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length].rstrip()
+    return sanitized
 
 
 def map_tencent_voice(voice: str) -> int:
@@ -105,11 +133,6 @@ def request_tencent_tts(text: str, voice: str, emotion: str) -> bytes:
 
 
 async def synthesize_with_tencent(text: str, voice: str, emotion: str, output_path: Path) -> Optional[int]:
-    sample = BASE_DIR / "sample.mp3"
-    if sample.exists():
-        output_path.write_bytes(sample.read_bytes())
-        return None
-
     audio_bytes = request_tencent_tts(text, voice, emotion)
     output_path.write_bytes(audio_bytes)
     return None
@@ -120,6 +143,10 @@ async def synthesize(payload: SynthesizeRequest):
     text = sanitize_text(payload.text)
     if not text:
         raise HTTPException(status_code=400, detail="Empty text")
+
+    normalized_text = normalize_tts_text(text)
+    if not normalized_text:
+        raise HTTPException(status_code=400, detail="Empty text after normalization")
 
     fmt = payload.format.lower()
     if fmt not in {"mp3", "wav"}:
@@ -132,9 +159,48 @@ async def synthesize(payload: SynthesizeRequest):
     duration_ms = None
     if not output_path.exists():
         try:
-            duration_ms = await synthesize_with_tencent(text, payload.voice, payload.emotion, output_path)
+            duration_ms = await synthesize_with_tencent(normalized_text, payload.voice, payload.emotion, output_path)
         except Exception as error:
-            raise HTTPException(status_code=502, detail=f"TTS synthesis failed: {error}") from error
+            logger.warning(
+                "Primary TTS synthesis failed. original=%r normalized=%r voice=%s emotion=%s error=%s",
+                text[:200],
+                normalized_text[:200],
+                payload.voice,
+                payload.emotion,
+                error,
+            )
+            fallback_text = normalize_tts_text(normalized_text[:40])
+            if fallback_text and fallback_text != normalized_text:
+                fallback_key = build_cache_key(fallback_text, payload.voice, payload.emotion, fmt)
+                fallback_name = f"{fallback_key}.{fmt}"
+                fallback_output_path = AUDIO_DIR / fallback_name
+                if not fallback_output_path.exists():
+                    try:
+                        duration_ms = await synthesize_with_tencent(
+                            fallback_text,
+                            payload.voice,
+                            payload.emotion,
+                            fallback_output_path,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Fallback TTS synthesis failed. fallback=%r voice=%s emotion=%s",
+                            fallback_text[:200],
+                            payload.voice,
+                            payload.emotion,
+                        )
+                        raise HTTPException(status_code=502, detail=f"TTS synthesis failed: {error}") from error
+                output_path = fallback_output_path
+                file_name = fallback_name
+            else:
+                logger.exception(
+                    "TTS synthesis failed without fallback. original=%r normalized=%r voice=%s emotion=%s",
+                    text[:200],
+                    normalized_text[:200],
+                    payload.voice,
+                    payload.emotion,
+                )
+                raise HTTPException(status_code=502, detail=f"TTS synthesis failed: {error}") from error
 
     return SynthesizeResponse(
         audio_url=f"{BASE_URL}/audio/{file_name}",

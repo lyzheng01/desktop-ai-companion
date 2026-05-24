@@ -38,6 +38,8 @@ env/
 data/*.db
 data/*.json
 !data/.gitkeep
+data/live2d/
+tts-server/audio/
 
 # 日志
 *.log

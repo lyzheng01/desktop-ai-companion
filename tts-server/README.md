@@ -9,15 +9,9 @@ Provide a small standalone TTS service for Desktop AI Companion.
 - `POST /synthesize`
 - static audio files under `/audio/...`
 
-## Local Validation Mode
+## Start Service
 
-By default, this server can run in a fake mode by copying `sample.mp3` from the same directory.
-
-Put a sample file here before testing:
-
-- `tts-server/sample.mp3`
-
-Then start the service:
+Start the service:
 
 ```bash
 uvicorn server:app --host 0.0.0.0 --port 9000
@@ -51,6 +45,6 @@ DESKTOP_AI_COMPANION_TTS_SERVER_URL=http://127.0.0.1:9000
 }
 ```
 
-## Next Step
+## Implementation
 
-Replace the fake sample-copy implementation in `server.py` with the real Tencent TTS call.
+This service calls Tencent TTS directly and writes the returned audio to the local `audio/` cache.
