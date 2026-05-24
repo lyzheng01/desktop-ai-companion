@@ -80,6 +80,8 @@ type CharacterBehavior = {
     listenGroups: string[];
     thinkGroups: string[];
     talkGroups: string[];
+    emotionTalkGroups?: Partial<Record<ReplyEmotion, string[]>>;
+    contextTalkGroups?: Partial<Record<ReplyContext, string[]>>;
     supportsRandomExpression: boolean;
 };
 
@@ -88,6 +90,7 @@ type HiyoriActionHandler = () => void;
 type CompanionState = 'idle' | 'listening' | 'thinking' | 'searching' | 'composing' | 'talking' | 'sleeping';
 type ProactiveTriggerType = 'morning_greeting' | 'night_greeting' | 'long_work_session' | 'meal_time' | 'weather_update' | 'care_followup';
 type ReplyEmotion = 'calm' | 'happy' | 'shy' | 'concerned' | 'serious';
+type ReplyContext = 'comfort' | 'praise' | 'remind' | 'reject' | 'explain' | 'general';
 type SendMessageOptions = {
     textOverride?: string;
     autoVoiceReply?: boolean;
@@ -135,6 +138,7 @@ let baseModelY = 0;
 let idleActionTimer: number | null = null;
 let talkLoopTimer: number | null = null;
 let talkStopTimer: number | null = null;
+let talkMotionTimer: number | null = null;
 let talkingSessionId = 0;
 let customAnimationTimer: number | null = null;
 let stageAnimationFrame: number | null = null;
@@ -229,9 +233,24 @@ const characterBehaviors: Record<string, CharacterBehavior> = {
         idleGroups: ['Idle'],
         tapGroups: ['React', 'Special'],
         greetGroups: ['Greet', 'React'],
-        listenGroups: ['Listen', 'Idle'],
-        thinkGroups: ['Think', 'Idle'],
-        talkGroups: ['Talk', 'Idle'],
+        listenGroups: ['Listen'],
+        thinkGroups: ['Idle'],
+        talkGroups: ['Talk', 'React'],
+        emotionTalkGroups: {
+            happy: ['Greet', 'React', 'Talk', 'Special'],
+            shy: ['React', 'Talk', 'Greet'],
+            concerned: ['Talk', 'React', 'Listen'],
+            serious: ['Listen', 'Talk', 'React'],
+            calm: ['Talk', 'React', 'Greet'],
+        },
+        contextTalkGroups: {
+            comfort: ['Talk', 'React', 'Listen', 'Greet'],
+            praise: ['Greet', 'Talk', 'React', 'Special'],
+            remind: ['Listen', 'Talk', 'React', 'Special'],
+            reject: ['Special', 'React', 'Talk', 'Listen'],
+            explain: ['Talk', 'Listen', 'React', 'Greet'],
+            general: ['Talk', 'React', 'Greet', 'Special'],
+        },
         supportsRandomExpression: false,
     },
     chitose: {
@@ -268,6 +287,21 @@ const characterBehaviors: Record<string, CharacterBehavior> = {
         listenGroups: ['Idle'],
         thinkGroups: ['Idle'],
         talkGroups: ['Idle', 'FlickUp', 'FlickDown'],
+        emotionTalkGroups: {
+            happy: ['FlickUp', 'Flick'],
+            shy: ['Tap@Body', 'Idle'],
+            concerned: ['FlickDown', 'Idle'],
+            serious: ['Tap', 'FlickDown'],
+            calm: ['Idle', 'Flick'],
+        },
+        contextTalkGroups: {
+            comfort: ['FlickDown', 'Idle'],
+            praise: ['FlickUp', 'Flick'],
+            remind: ['Tap', 'Idle'],
+            reject: ['Tap', 'FlickDown'],
+            explain: ['Idle', 'Flick'],
+            general: ['Idle', 'FlickUp'],
+        },
         supportsRandomExpression: false,
     },
 };
@@ -806,9 +840,6 @@ function updateCompanionStateFeedback(state: CompanionState, previousState?: Com
 
     if (state === 'thinking') {
         showPersistentIndicator('想一下');
-        if (currentModel) {
-            animateHeadTilt(-0.12, -18, 760);
-        }
         if (stateChanged) {
             void playExpressionByCandidates(getStateExpressionCandidates(state));
             void playMotionFromGroups(getCurrentBehavior().thinkGroups);
@@ -1488,6 +1519,29 @@ function classifyReplyEmotion(text: string): ReplyEmotion {
     return 'calm';
 }
 
+function classifyReplyContext(text: string): ReplyContext {
+    const normalized = text.trim();
+    const matches = (patterns: RegExp[]) => patterns.some((pattern) => pattern.test(normalized));
+
+    if (matches([/辛苦了/, /没关系/, /抱抱/, /先休息/, /我陪你/, /慢慢来/, /别担心/])) {
+        return 'comfort';
+    }
+    if (matches([/真棒/, /好厉害/, /太好了/, /做得很好/, /真不错/, /好耶/])) {
+        return 'praise';
+    }
+    if (matches([/记得/, /注意/, /别忘了/, /早点睡/, /喝水/, /小心/])) {
+        return 'remind';
+    }
+    if (matches([/不行/, /不能/, /不可以/, /别这样/, /最好不要/])) {
+        return 'reject';
+    }
+    if (matches([/因为/, /所以/, /一般来说/, /可以这样理解/, /通常情况下/])) {
+        return 'explain';
+    }
+
+    return 'general';
+}
+
 function getReplyEmotionExpressionCandidates(emotion: ReplyEmotion): string[] {
     if (currentCharacter === 'mao_pro_zh') {
         switch (emotion) {
@@ -1525,6 +1579,16 @@ function getStateExpressionCandidates(state: CompanionState): string[] {
     }
 
     return [];
+}
+
+function selectSpeakingMotionGroups(emotion: ReplyEmotion, context: ReplyContext): string[] {
+    const behavior = getCurrentBehavior();
+    const merged = [
+        ...(behavior.contextTalkGroups?.[context] ?? []),
+        ...(behavior.emotionTalkGroups?.[emotion] ?? []),
+        ...behavior.talkGroups,
+    ];
+    return merged.filter((group, index) => merged.indexOf(group) === index).slice(0, 6);
 }
 
 function isHiyoriCharacter() {
@@ -2778,12 +2842,16 @@ function scheduleIdleLoop() {
     }, nextDelay);
 }
 
-function startTalkingAnimation(text: string, emotion: ReplyEmotion = 'calm') {
+function startTalkingAnimation(text: string, emotion: ReplyEmotion = 'calm', context: ReplyContext = 'general') {
     const duration = Math.min(5000, Math.max(900, text.length * 90));
 
     if (talkLoopTimer !== null) {
         window.clearInterval(talkLoopTimer);
         talkLoopTimer = null;
+    }
+    if (talkMotionTimer !== null) {
+        window.clearInterval(talkMotionTimer);
+        talkMotionTimer = null;
     }
     if (talkStopTimer !== null) {
         window.clearTimeout(talkStopTimer);
@@ -2803,19 +2871,28 @@ function startTalkingAnimation(text: string, emotion: ReplyEmotion = 'calm') {
 
     live2dDebugState.talkingActive = true;
 
-    const behavior = getCurrentBehavior();
+    const speakingMotionGroups = selectSpeakingMotionGroups(emotion, context);
     void playExpressionByCandidates(getReplyEmotionExpressionCandidates(emotion));
-    void playMotionFromGroups(behavior.talkGroups);
+    void playMotionFromGroups(speakingMotionGroups);
 
     talkLoopTimer = window.setInterval(() => {
         setLipSyncValue(0.2 + Math.random() * 0.8);
     }, 120);
+
+    talkMotionTimer = window.setInterval(() => {
+        if (sessionId !== talkingSessionId) return;
+        void playMotionFromGroups(speakingMotionGroups);
+    }, 1100);
 
     talkStopTimer = window.setTimeout(() => {
         if (sessionId !== talkingSessionId) return;
         if (talkLoopTimer !== null) {
             window.clearInterval(talkLoopTimer);
             talkLoopTimer = null;
+        }
+        if (talkMotionTimer !== null) {
+            window.clearInterval(talkMotionTimer);
+            talkMotionTimer = null;
         }
         talkStopTimer = null;
         setLipSyncValue(0);
@@ -3475,12 +3552,6 @@ async function ensureSpeechRuntimeAvailable() {
     return false;
 }
 
-function buildSpeechSummary(text: string) {
-    const normalized = text.replace(/\s+/g, ' ').trim();
-    const firstSentence = normalized.split(/[。！？!?]/)[0]?.trim() || normalized;
-    return firstSentence.slice(0, 40);
-}
-
 async function requestRemoteSpeech(text: string, voice: string, emotion: ReplyEmotion) {
     const response = await fetch(`${backendBaseUrl}/speech/synthesize`, {
         method: 'POST',
@@ -3494,12 +3565,14 @@ async function requestRemoteSpeech(text: string, voice: string, emotion: ReplyEm
 }
 
 async function playRemoteAudio(url: string): Promise<void> {
+    console.log('[remote-tts] play url:', url);
+    await voiceManager.unlock();
     await new Promise<void>((resolve, reject) => {
         const audio = new Audio(resolveModelAssetPath(url));
         audio.preload = 'auto';
         audio.onended = () => resolve();
         audio.onerror = () => reject(new Error('远程语音播放失败'));
-        void audio.play();
+        void audio.play().catch((error) => reject(error));
     });
 }
 
@@ -3573,7 +3646,7 @@ function applyCompanionStateRequest(payload: CompanionStateRequest) {
     }
     if (payload.type === 'speaking') {
         if (payload.text?.trim()) {
-            startTalkingAnimation(payload.text, payload.emotion ?? 'calm');
+            startTalkingAnimation(payload.text, payload.emotion ?? 'calm', classifyReplyContext(payload.text));
         } else {
             setCompanionState('talking');
         }
@@ -3636,6 +3709,7 @@ async function sendMessage(options: SendMessageOptions = {}) {
         }
         appendFrontendHistory('assistant', finalContent);
         const replyEmotion = classifyReplyEmotion(finalContent);
+        const replyContext = classifyReplyContext(finalContent);
         if (memoryAcknowledgement) {
             const ackDiv = addMessage('assistant', memoryAcknowledgement);
             if (ackDiv) {
@@ -3646,20 +3720,21 @@ async function sendMessage(options: SendMessageOptions = {}) {
             }
         }
         void refreshMemoryList();
-        startTalkingAnimation(finalContent, replyEmotion);
+        startTalkingAnimation(finalContent, replyEmotion, replyContext);
         void emitCompanionStateRequest({ type: 'speaking', emotion: replyEmotion, text: finalContent });
         if (options.autoVoiceReply && appSettings.voice_enabled) {
-            const speechText = buildSpeechSummary(finalContent);
             try {
-                const result = await requestRemoteSpeech(speechText, appSettings.voice_pack, replyEmotion);
+                console.log('[remote-tts] requesting speech:', { text: finalContent, voice: appSettings.voice_pack, emotion: replyEmotion });
+                const result = await requestRemoteSpeech(finalContent, appSettings.voice_pack, replyEmotion);
+                console.log('[remote-tts] response:', result);
                 if (result.audio_url) {
                     await playRemoteAudio(result.audio_url);
                 } else {
-                    await voiceManager.speakText(speechText);
+                    await voiceManager.speakText(finalContent);
                 }
             } catch (error) {
                 console.warn('Remote TTS failed, falling back to local voice.', error);
-                await voiceManager.speakText(speechText);
+                await voiceManager.speakText(finalContent);
             }
         }
         if (options.continueConversation) {
