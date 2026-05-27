@@ -18,8 +18,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-DEFAULT_LLM_BASE_URL = "https://api.hanbbq.top/v1"
-DEFAULT_LLM_API_KEY = "sk-fe466420f529b88c208dc1c9bb6e52ba"
+DEFAULT_LLM_BASE_URL = "https://gmn.chuangzuoli.com/v1"
+DEFAULT_LLM_API_KEY = "sk-d58e97d25a5a4fd3272b6b11c81c71efd00829080e3c2ed444c00f558e545299"
 DEFAULT_LLM_MODEL = "gpt-5.4"
 NON_STREAM_LLM_TIMEOUT = 180
 STREAM_LLM_TIMEOUT = 300
@@ -1004,11 +1004,18 @@ app.add_middleware(
 
 BUILTIN_LIVE2D_DIR = PROJECT_ROOT / "assets" / "public" / "live2d"
 BUILTIN_PREVIEW_DIR = PROJECT_ROOT / "assets" / "public" / "model-previews" / "builtin"
+PUBLIC_RELEASE_DIR = Path(
+    os.getenv("DESKTOP_AI_COMPANION_PUBLIC_DIR", "/root/public/desktop-ai-companion")
+).expanduser().resolve()
+if not PUBLIC_RELEASE_DIR.exists():
+    PUBLIC_RELEASE_DIR = PROJECT_ROOT / "docs" / "releases"
+PUBLIC_RELEASE_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/live2d/imported", StaticFiles(directory=get_imported_models_dir()), name="imported-live2d")
 app.mount("/model-previews/imported", StaticFiles(directory=get_imported_preview_dir()), name="imported-previews")
 app.mount("/live2d", StaticFiles(directory=BUILTIN_LIVE2D_DIR), name="builtin-live2d")
 app.mount("/model-previews/builtin", StaticFiles(directory=BUILTIN_PREVIEW_DIR), name="builtin-previews")
+app.mount("/desktop-ai-companion", StaticFiles(directory=PUBLIC_RELEASE_DIR), name="desktop-ai-companion-public")
 
 # ============== API 端点 ==============
 
