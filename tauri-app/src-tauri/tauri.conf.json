@@ -67,6 +67,38 @@
           "skipTaskbar": false,
           "visible": false,
           "fullscreen": false
+        },
+        {
+          "label": "cleanup",
+          "title": "Desktop AI Companion Cleanup",
+          "width": 520,
+          "height": 760,
+          "minWidth": 420,
+          "minHeight": 560,
+          "resizable": true,
+          "transparent": false,
+          "decorations": true,
+          "shadow": true,
+          "alwaysOnTop": true,
+          "skipTaskbar": false,
+          "visible": false,
+          "fullscreen": false
+        },
+        {
+          "label": "pomodoro",
+          "title": "Desktop AI Companion Pomodoro",
+          "width": 420,
+          "height": 520,
+          "minWidth": 360,
+          "minHeight": 420,
+          "resizable": true,
+          "transparent": false,
+          "decorations": true,
+          "shadow": true,
+          "alwaysOnTop": true,
+          "skipTaskbar": false,
+          "visible": false,
+          "fullscreen": false
         }
     ],
     "security": {

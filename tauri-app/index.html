@@ -373,6 +373,7 @@
         body[data-window-label="settings"] #character-container,
         body[data-window-label="settings"] #chat-window,
         body[data-window-label="settings"] #model-panel,
+        body[data-window-label="settings"] #cleanup-window,
         body[data-window-label="settings"] #context-menu {
             display: none !important;
         }
@@ -402,6 +403,7 @@
         body[data-window-label="model"] #character-container,
         body[data-window-label="model"] #chat-window,
         body[data-window-label="model"] #settings-panel,
+        body[data-window-label="model"] #cleanup-window,
         body[data-window-label="model"] #context-menu {
             display: none !important;
         }
@@ -411,6 +413,70 @@
         }
 
         body[data-window-label="model"] #model-panel {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            max-height: none;
+            height: 100vh;
+            border-radius: 0;
+            box-shadow: none;
+            backdrop-filter: none;
+            display: flex;
+        }
+
+        body[data-window-label="cleanup"] {
+            background: rgba(248, 250, 255, 0.98);
+        }
+
+        body[data-window-label="cleanup"] #bootstrap-error-banner,
+        body[data-window-label="cleanup"] #first-run-panel,
+        body[data-window-label="cleanup"] #character-container,
+        body[data-window-label="cleanup"] #chat-window,
+        body[data-window-label="cleanup"] #settings-panel,
+        body[data-window-label="cleanup"] #model-panel,
+        body[data-window-label="cleanup"] #pomodoro-window,
+        body[data-window-label="cleanup"] #toolbox-modal,
+        body[data-window-label="cleanup"] #context-menu {
+            display: none !important;
+        }
+
+        body[data-window-label="cleanup"] #app {
+            justify-content: stretch;
+        }
+
+        body[data-window-label="cleanup"] #cleanup-window {
+            position: fixed;
+            inset: 0;
+            width: 100vw;
+            max-height: none;
+            height: 100vh;
+            border-radius: 0;
+            box-shadow: none;
+            backdrop-filter: none;
+            display: flex;
+        }
+
+        body[data-window-label="pomodoro"] {
+            background: rgba(248, 250, 255, 0.98);
+        }
+
+        body[data-window-label="pomodoro"] #bootstrap-error-banner,
+        body[data-window-label="pomodoro"] #first-run-panel,
+        body[data-window-label="pomodoro"] #character-container,
+        body[data-window-label="pomodoro"] #chat-window,
+        body[data-window-label="pomodoro"] #settings-panel,
+        body[data-window-label="pomodoro"] #model-panel,
+        body[data-window-label="pomodoro"] #cleanup-window,
+        body[data-window-label="pomodoro"] #toolbox-modal,
+        body[data-window-label="pomodoro"] #context-menu {
+            display: none !important;
+        }
+
+        body[data-window-label="pomodoro"] #app {
+            justify-content: stretch;
+        }
+
+        body[data-window-label="pomodoro"] #pomodoro-window {
             position: fixed;
             inset: 0;
             width: 100vw;
@@ -1034,6 +1100,433 @@
             margin: 6px 0;
         }
 
+        #toolbox-modal {
+            position: fixed;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(15, 23, 42, 0.28);
+            backdrop-filter: blur(10px);
+            z-index: 2100;
+            padding: 20px;
+        }
+
+        #toolbox-modal.visible {
+            display: flex;
+        }
+
+        .toolbox-card {
+            width: min(420px, 100%);
+            background: rgba(255, 255, 255, 0.96);
+            border-radius: 20px;
+            box-shadow: 0 16px 48px rgba(31, 41, 55, 0.22);
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, 0.65);
+        }
+
+        .toolbox-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 18px;
+            background: linear-gradient(135deg, #7c8cff 0%, #9d7cff 100%);
+            color: white;
+        }
+
+        .toolbox-header h3 {
+            font-size: 16px;
+            font-weight: 700;
+        }
+
+        .toolbox-close-btn {
+            border: none;
+            background: none;
+            color: white;
+            font-size: 22px;
+            cursor: pointer;
+            width: 28px;
+            height: 28px;
+        }
+
+        .toolbox-body {
+            padding: 18px;
+            display: grid;
+            gap: 14px;
+        }
+
+        .toolbox-intro {
+            color: #667085;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .toolbox-grid {
+            display: grid;
+            gap: 12px;
+        }
+
+        .toolbox-item {
+            width: 100%;
+            border: 1px solid #e5e7eb;
+            border-radius: 16px;
+            background: #f8faff;
+            padding: 16px;
+            text-align: left;
+            cursor: pointer;
+            display: grid;
+            gap: 6px;
+            transition: transform 0.16s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+        }
+
+        .toolbox-item:hover {
+            transform: translateY(-1px);
+            border-color: #cdd6ff;
+            box-shadow: 0 10px 24px rgba(148, 163, 184, 0.18);
+        }
+
+        .toolbox-item-title {
+            font-size: 15px;
+            font-weight: 700;
+            color: #1f2937;
+        }
+
+        .toolbox-item-desc {
+            font-size: 12px;
+            line-height: 1.6;
+            color: #667085;
+        }
+
+        .toolbox-detail {
+            display: none;
+            gap: 12px;
+            padding: 14px;
+            border-radius: 16px;
+            background: linear-gradient(180deg, #f8faff 0%, #f3f5ff 100%);
+            border: 1px solid #e5e7eb;
+        }
+
+        .toolbox-detail.visible {
+            display: grid;
+        }
+
+        .toolbox-detail-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .toolbox-detail-title {
+            font-size: 14px;
+            font-weight: 700;
+            color: #1f2937;
+        }
+
+        .toolbox-back-btn {
+            border: none;
+            border-radius: 999px;
+            background: white;
+            color: #4452b8;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .toolbox-timer-display {
+            text-align: center;
+            font-size: 44px;
+            font-weight: 800;
+            letter-spacing: 2px;
+            color: #344054;
+            padding: 6px 0;
+        }
+
+        .toolbox-timer-status {
+            text-align: center;
+            font-size: 12px;
+            color: #667085;
+        }
+
+        .toolbox-timer-actions {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .toolbox-timer-actions button {
+            border: none;
+            border-radius: 12px;
+            padding: 12px 14px;
+            cursor: pointer;
+            font-weight: 700;
+            font-size: 13px;
+        }
+
+        .toolbox-primary-btn {
+            background: linear-gradient(135deg, #7c8cff 0%, #9d7cff 100%);
+            color: white;
+        }
+
+        .toolbox-secondary-btn {
+            background: white;
+            color: #4452b8;
+            border: 1px solid #d8def5;
+        }
+
+        .toolbox-result-list {
+            display: grid;
+            gap: 10px;
+        }
+
+        .toolbox-result-group {
+            display: grid;
+            gap: 10px;
+        }
+
+        .toolbox-result-group-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            font-size: 12px;
+            font-weight: 800;
+            color: #475467;
+            letter-spacing: 0.4px;
+        }
+
+        .toolbox-result-group-size {
+            font-size: 11px;
+            font-weight: 700;
+            color: #667085;
+        }
+
+        .toolbox-summary {
+            display: none;
+            padding: 12px 14px;
+            border-radius: 14px;
+            background: linear-gradient(135deg, #eef2ff 0%, #f6f0ff 100%);
+            color: #4452b8;
+            font-size: 12px;
+            line-height: 1.7;
+        }
+
+        .toolbox-summary.visible {
+            display: block;
+        }
+
+        .toolbox-warning {
+            padding: 12px 14px;
+            border-radius: 14px;
+            background: #fff4e5;
+            border: 1px solid #f5d7a1;
+            color: #9a6700;
+            font-size: 12px;
+            line-height: 1.7;
+        }
+
+        .cleanup-scan-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px 18px;
+            background: linear-gradient(135deg, #7c8cff 0%, #9d7cff 100%);
+            color: white;
+        }
+
+        .cleanup-scan-header h3 {
+            font-size: 16px;
+            font-weight: 700;
+        }
+
+        .cleanup-scan-close-btn {
+            border: none;
+            background: none;
+            color: white;
+            font-size: 22px;
+            width: 28px;
+            height: 28px;
+            cursor: pointer;
+        }
+
+        .cleanup-scan-body {
+            padding: 18px;
+            display: grid;
+            gap: 14px;
+            overflow-y: auto;
+        }
+
+        .cleanup-scan-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+        }
+
+        .cleanup-filter-row {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .cleanup-nav-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+        }
+
+        .cleanup-current-path {
+            min-width: 0;
+            font-size: 12px;
+            color: #667085;
+            word-break: break-all;
+        }
+
+        .cleanup-filter-btn {
+            border: 1px solid #d8def5;
+            border-radius: 999px;
+            background: white;
+            color: #4452b8;
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
+        .cleanup-filter-btn.active {
+            background: linear-gradient(135deg, #7c8cff 0%, #9d7cff 100%);
+            color: white;
+            border-color: transparent;
+        }
+
+        .cleanup-scan-progress {
+            position: relative;
+            height: 10px;
+            border-radius: 999px;
+            background: #edf2ff;
+            overflow: hidden;
+        }
+
+        .cleanup-scan-progress::after {
+            content: '';
+            position: absolute;
+            inset: 0;
+            width: 38%;
+            border-radius: 999px;
+            background: linear-gradient(135deg, #7c8cff 0%, #9d7cff 100%);
+            animation: cleanup-progress-slide 1.4s ease-in-out infinite;
+        }
+
+        @keyframes cleanup-progress-slide {
+            0% { transform: translateX(-120%); }
+            100% { transform: translateX(320%); }
+        }
+
+        #cleanup-window[data-scanning="false"] .cleanup-scan-progress::after {
+            animation: none;
+            width: 100%;
+            transform: translateX(0);
+            opacity: 0.18;
+        }
+
+        .toolbox-result-item {
+            display: grid;
+            gap: 4px;
+            padding: 12px 14px;
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 14px;
+        }
+
+        .toolbox-result-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .toolbox-result-kind {
+            font-size: 12px;
+            font-weight: 700;
+            color: #4452b8;
+        }
+
+        .toolbox-result-priority {
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            background: #eef2ff;
+            color: #4452b8;
+        }
+
+        .toolbox-result-priority[data-priority="高"] {
+            background: #fee4e2;
+            color: #b42318;
+        }
+
+        .toolbox-result-priority[data-priority="中"] {
+            background: #fff4e5;
+            color: #b54708;
+        }
+
+        .toolbox-result-kind[data-tier="safe_to_clean"] {
+            color: #047857;
+        }
+
+        .toolbox-result-kind[data-tier="review_recommended"] {
+            color: #b54708;
+        }
+
+        .toolbox-result-kind[data-tier="do_not_delete_directly"] {
+            color: #b42318;
+        }
+
+        .toolbox-result-reason {
+            font-size: 12px;
+            line-height: 1.5;
+            color: #344054;
+        }
+
+        .toolbox-result-size {
+            font-size: 12px;
+            font-weight: 700;
+            color: #b42318;
+        }
+
+        .toolbox-result-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 4px;
+        }
+
+        .toolbox-result-path {
+            font-size: 12px;
+            color: #344054;
+            word-break: break-all;
+        }
+
+        .toolbox-result-advice {
+            font-size: 12px;
+            line-height: 1.6;
+            color: #667085;
+        }
+
+        .toolbox-result-open-btn {
+            justify-self: start;
+            margin-top: 4px;
+            border: none;
+            border-radius: 10px;
+            background: #eef2ff;
+            color: #4452b8;
+            padding: 8px 12px;
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 700;
+        }
+
         #model-panel {
             position: fixed;
             top: 20px;
@@ -1051,6 +1544,48 @@
         }
 
         #model-panel.visible {
+            display: flex;
+        }
+
+        #cleanup-window {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            width: 460px;
+            max-width: calc(100vw - 40px);
+            max-height: calc(100vh - 40px);
+            background: rgba(255,255,255,0.97);
+            border-radius: 18px;
+            box-shadow: 0 10px 32px rgba(0,0,0,0.18);
+            backdrop-filter: blur(12px);
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            z-index: 1160;
+        }
+
+        #cleanup-window.visible {
+            display: flex;
+        }
+
+        #pomodoro-window {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            width: 380px;
+            max-width: calc(100vw - 40px);
+            max-height: calc(100vh - 40px);
+            background: rgba(255,255,255,0.97);
+            border-radius: 18px;
+            box-shadow: 0 10px 32px rgba(0,0,0,0.18);
+            backdrop-filter: blur(12px);
+            display: none;
+            flex-direction: column;
+            overflow: hidden;
+            z-index: 1160;
+        }
+
+        #pomodoro-window.visible {
             display: flex;
         }
 
@@ -1212,13 +1747,11 @@
                 <label for="creator-name-input">伙伴名字</label>
                 <input id="creator-name-input" type="text" value="小艾" maxlength="20">
 
-                <label for="creator-personality-select">性格（可多选）</label>
-                <select id="creator-personality-select" multiple>
-                    <option value="温柔" selected>温柔</option>
-                    <option value="安静">安静</option>
-                    <option value="元气">元气</option>
-                    <option value="理性">理性</option>
-                    <option value="治愈">治愈</option>
+                <label for="creator-persona-select">人格原型</label>
+                <select id="creator-persona-select">
+                    <option value="warm" selected>温柔型</option>
+                    <option value="energetic">元气型</option>
+                    <option value="companion">陪伴型</option>
                 </select>
 
                 <label for="creator-mode-select">陪伴模式</label>
@@ -1308,13 +1841,11 @@
                     <label for="user-display-name-input">虚拟人如何称呼你</label>
                     <input id="user-display-name-input" type="text" value="主人" maxlength="20">
 
-                    <label for="personality-select">性格</label>
-                    <select id="personality-select">
-                        <option value="温柔">温柔</option>
-                        <option value="安静">安静</option>
-                        <option value="元气">元气</option>
-                        <option value="理性">理性</option>
-                        <option value="治愈">治愈</option>
+                    <label for="persona-select">人格原型</label>
+                    <select id="persona-select">
+                        <option value="warm">温柔型</option>
+                        <option value="energetic">元气型</option>
+                        <option value="companion">陪伴型</option>
                     </select>
 
                     <label for="interaction-mode-select">你希望它更像什么？</label>
@@ -1417,8 +1948,86 @@
             </div>
         </div>
 
+        <div id="toolbox-modal">
+            <div class="toolbox-card">
+                <div class="toolbox-header">
+                    <h3>百宝箱</h3>
+                    <button class="toolbox-close-btn" type="button">×</button>
+                </div>
+                <div class="toolbox-body">
+                    <p class="toolbox-intro">先放两个常用小工具，后面可以继续往这里扩。</p>
+                    <div class="toolbox-grid">
+                        <button class="toolbox-item" type="button" data-tool="cleanup-c-drive">
+                            <span class="toolbox-item-title">C盘清理</span>
+                            <span class="toolbox-item-desc">单独打开清理窗口，扫描缓存、临时文件和日志目录。</span>
+                        </button>
+                        <button class="toolbox-item" type="button" data-tool="pomodoro-timer">
+                            <span class="toolbox-item-title">番茄钟</span>
+                            <span class="toolbox-item-desc">单独打开番茄钟窗口，开始专注或休息节奏。</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="pomodoro-window">
+            <div class="settings-header" data-tauri-drag-region>
+                <h3>番茄钟</h3>
+                <button class="pomodoro-close-btn" type="button">×</button>
+            </div>
+            <div class="settings-body">
+                <div class="settings-item">
+                    <strong>专注节奏</strong>
+                    默认一轮是 25 分钟专注，结束后会切到 5 分钟休息。
+                </div>
+                <div id="pomodoro-time" class="toolbox-timer-display">25:00</div>
+                <div id="pomodoro-status" class="toolbox-timer-status">准备开始一段 25 分钟专注时间</div>
+                <div class="toolbox-timer-actions">
+                    <button id="pomodoro-toggle-btn" class="toolbox-primary-btn" type="button">开始专注</button>
+                    <button id="pomodoro-reset-btn" class="toolbox-secondary-btn" type="button">重置</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="cleanup-window" data-scanning="false">
+            <div class="cleanup-scan-header settings-header" data-tauri-drag-region>
+                <h3>C盘清理</h3>
+                <button class="cleanup-scan-close-btn" type="button">×</button>
+            </div>
+            <div class="cleanup-scan-body settings-body">
+                <div class="settings-item">
+                    <strong>按占用从大到小分析主要目录</strong>
+                    这里会统计 C 盘主要目录、用户目录和重点缓存目录的体积，再按从大到小排出来，方便你先找最占空间的位置。
+                </div>
+                <div class="toolbox-warning">风险提示：结果会包含系统目录和软件目录，因为它们确实可能很大。但这不代表可以直接删。像 Windows、Program Files、System32 这类目录，只能先定位占用，再通过系统清理、卸载软件或清理具体缓存来处理。</div>
+                <div class="toolbox-timer-actions">
+                    <button id="cleanup-scan-btn" class="toolbox-primary-btn" type="button">开始分析</button>
+                    <button id="cleanup-rescan-btn" class="toolbox-secondary-btn" type="button">重新分析</button>
+                </div>
+                <div class="toolbox-timer-actions">
+                    <button id="cleanup-deep-scan-btn" class="toolbox-secondary-btn" type="button">深度分析</button>
+                    <button id="cleanup-cancel-btn" class="toolbox-secondary-btn" type="button" hidden>取消深度分析</button>
+                    <button id="cleanup-storage-btn" class="toolbox-secondary-btn" type="button">打开存储设置</button>
+                </div>
+                <div class="cleanup-nav-row">
+                    <button id="cleanup-back-btn" class="toolbox-secondary-btn" type="button" hidden>返回上一级</button>
+                    <div id="cleanup-current-path" class="cleanup-current-path">当前视图：C盘主要目录</div>
+                </div>
+                <div class="cleanup-filter-row">
+                    <button id="cleanup-filter-all" class="cleanup-filter-btn active" type="button">全部结果</button>
+                    <button id="cleanup-filter-high" class="cleanup-filter-btn" type="button">只看高优先级</button>
+                </div>
+                <div class="cleanup-scan-progress"></div>
+                <div id="cleanup-status" class="toolbox-timer-status">准备开始分析 C 盘主要目录和常见缓存目录。</div>
+                <div id="cleanup-summary" class="toolbox-summary"></div>
+                <div id="cleanup-results" class="toolbox-result-list"></div>
+            </div>
+        </div>
+
         <!-- 右键菜单 -->
         <div id="context-menu">
+            <button data-action="toolbox">🧰 百宝箱</button>
+            <div class="separator"></div>
             <button data-action="model-picker">🗂 选择模型</button>
             <div class="separator"></div>
             <button data-action="hide">🙈 隐藏</button>

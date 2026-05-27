@@ -13,6 +13,7 @@ export interface ChatConfig {
     apiEndpoint?: string;
     model?: string;
     memoryContextProvider?: () => ChatMessage[];
+    profileContextProvider?: () => ChatMessage[];
     historyContextProvider?: () => ChatMessage[];
     clientVersionProvider?: () => string;
 }
@@ -85,8 +86,9 @@ export class ChatClient {
 
     private buildRequestContext(): ChatMessage[] {
         const memoryContext = this.config.memoryContextProvider?.() ?? [];
+        const profileContext = this.config.profileContextProvider?.() ?? [];
         const historyContext = this.config.historyContextProvider?.() ?? [];
-        return [...memoryContext, ...historyContext, ...this.messages.slice(-10)];
+        return [...memoryContext, ...profileContext, ...historyContext, ...this.messages.slice(-10)];
     }
 
     private buildRequestHeaders(extraHeaders: HeadersInit = {}): HeadersInit {

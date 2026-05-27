@@ -23,6 +23,7 @@ type AppSettings = {
     user_display_name: string;
     character_type: string;
     character_name: string;
+    persona_type: 'warm' | 'energetic' | 'companion';
     personality: string[];
     interaction_mode: string;
     proactive_mode: string;
@@ -57,12 +58,16 @@ type FrontendMemoryItem = {
     id: string;
     content: string;
     scope: 'preference' | 'short_term' | 'long_term';
+    kind?: 'preference' | 'reply_style' | 'taste' | 'current_project' | 'current_focus';
     created_at: string;
 };
+
+type PersonaType = 'warm' | 'energetic' | 'companion';
 
 type FrontendMemoryCandidate = {
     content: string;
     scope: FrontendMemoryItem['scope'];
+    kind?: FrontendMemoryItem['kind'];
     explicit: boolean;
 };
 
@@ -116,6 +121,32 @@ type RemoteSpeechResponse = {
     duration_ms?: number | null;
 };
 
+type CleanupCandidate = {
+    display_name: string;
+    path: string;
+    category: string;
+    size_bytes: number;
+    size_label: string;
+    priority: string;
+    advice: string;
+    tier: 'safe_to_clean' | 'review_recommended' | 'do_not_delete_directly';
+    risk_level: 'low' | 'medium' | 'high';
+    suggested_action: 'clean' | 'open_for_review' | 'show_info_only' | 'uninstall_app';
+    reason_short: string;
+    stale_days?: number | null;
+};
+
+type CleanupDeepScanTaskSnapshot = {
+    task_id: string;
+    status: 'running' | 'completed' | 'cancelled' | 'cancelling';
+    progress: number;
+    message: string;
+    results: CleanupCandidate[];
+    error?: string | null;
+};
+
+const CLEANUP_DRILLDOWN_MIN_BYTES = 50 * 1024 * 1024;
+
 let app: PIXI.Application;
 let currentModel: any = null;
 let chatWindowVisible = false;
@@ -140,11 +171,13 @@ let talkLoopTimer: number | null = null;
 let talkStopTimer: number | null = null;
 let talkMotionTimer: number | null = null;
 let talkingSessionId = 0;
+let promoCaptureMode = false;
 let customAnimationTimer: number | null = null;
 let stageAnimationFrame: number | null = null;
 let actionIndicatorTimer: number | null = null;
 let bubbleTimer: number | null = null;
 let lastBubbleLine = '';
+const lastProactiveLineByTrigger: Partial<Record<ProactiveTriggerType | 'memory_ack_single' | 'memory_ack_multi', string>> = {};
 let pendingSingleClickTimer: number | null = null;
 let proactiveCheckTimer: number | null = null;
 let lastUserActivityAt = Date.now();
@@ -154,6 +187,7 @@ let modelPreviewVersion = Date.now().toString();
 let currentDataDir = '';
 let firstRunRequired = false;
 let desktopFlowStarted = false;
+let cleanupResultFilter: 'all' | 'high' = 'all';
 let bootstrapActiveCompanion: CompanionProfile | null = null;
 let pendingFirstRunCompanionId: number | null = null;
 let cachedCompanions: CompanionProfile[] = [];
@@ -173,6 +207,17 @@ let latestAvailableVersion = '';
 let minimumSupportedVersion = '';
 let forceUpdateRequired = false;
 let pendingReleaseManifest: ReleaseManifest | null = null;
+let pomodoroTimerHandle: number | null = null;
+let pomodoroPhase: 'focus' | 'break' = 'focus';
+let pomodoroRemainingSeconds = 25 * 60;
+let pomodoroRunning = false;
+let cleanupScanStageTimers: number[] = [];
+let lastCleanupResults: CleanupCandidate[] = [];
+let rootCleanupResults: CleanupCandidate[] = [];
+let cleanupNavigationStack: string[] = [];
+let cleanupScanMode: 'light' | 'deep' = 'light';
+let cleanupDeepScanTaskId: string | null = null;
+let cleanupDeepScanPollTimer: number | null = null;
 const voiceManager = new VoiceManager();
 let speechRecordingState: 'idle' | 'recording' | 'transcribing' = 'idle';
 let speechConversationActive = false;
@@ -184,9 +229,68 @@ const speechInputManager = new SpeechInputManager({
         updateSpeechInputButton();
     },
 });
+
+const proactiveLineOptions = {
+    morning_greeting: [
+        '早呀，今天也一起慢慢开始吧。',
+        '早呀，今天也慢慢来。',
+        '新的一天开始了，先别急。',
+    ],
+    night_greeting: [
+        '不早啦，忙完的话也记得早点休息。',
+        '已经不早啦，别太晚睡哦。',
+        '今天也辛苦了，晚一点就收工吧。',
+    ],
+    long_work_session: [
+        '你已经坐挺久啦，要不要起来活动一下？',
+        '先歇一分钟也可以，不会耽误太多。',
+        '脑袋转太久会累的，缓一下吧。',
+    ],
+    meal_time_lunch: [
+        '差不多到饭点了，记得照顾一下自己。',
+        '差不多该吃点东西啦。',
+        '别又忙到忘记吃饭。',
+    ],
+    meal_time_dinner: [
+        '晚饭时间快到了，别让自己太晚吃饭哦。',
+        '晚一点也记得去吃饭哦。',
+        '先垫一口也行，别空着肚子。',
+    ],
+} as const;
+
+const memoryAcknowledgementOptions = {
+    single: [
+        '我记住了。',
+        '好，我记下来了。',
+        '嗯，这件事我会记着。',
+    ],
+    multi: [
+        '我记住了。',
+        '好，我都记下来了。',
+        '嗯，这几件事我都会记着。',
+    ],
+} as const;
+
+const proactiveVoiceFallbackOptions = {
+    weather_update: [
+        '我帮你看了一眼天气，今天出门前可以多留意一下温度。',
+        '我看过天气啦，出门前记得留意一下。',
+    ],
+    care_followup: [
+        '主人，今天也别太辛苦啦。',
+        '我有点惦记你，今天也别太累哦。',
+    ],
+} as const;
+
+const proactiveVoicePreferredTriggers = new Set<ProactiveTriggerType>([
+    'morning_greeting',
+    'night_greeting',
+    'care_followup',
+]);
 const chatClient = new ChatClient({
     apiEndpoint: `${backendBaseUrl}/chat`,
     memoryContextProvider: () => buildFrontendMemoryContextMessages(),
+    profileContextProvider: () => buildFrontendProfileContextMessages(),
     historyContextProvider: () => buildFrontendHistoryContextMessages(),
     clientVersionProvider: () => currentAppVersion,
 });
@@ -212,6 +316,14 @@ function isSettingsStandaloneWindow() {
 
 function isModelStandaloneWindow() {
     return currentWindowLabel === 'model';
+}
+
+function isCleanupStandaloneWindow() {
+    return currentWindowLabel === 'cleanup';
+}
+
+function isPomodoroStandaloneWindow() {
+    return currentWindowLabel === 'pomodoro';
 }
 const cubismCoreUrl = '/vendor/live2dcubismcore.min.js';
 const PACKAGED_BUILTIN_MODEL_KEYS = new Set(['mao_pro_zh', 'hiyori_pro_zh']);
@@ -341,6 +453,7 @@ let appSettings: AppSettings = {
     user_display_name: '主人',
     character_type: 'mao_pro_zh',
     character_name: 'Mao',
+    persona_type: 'warm',
     personality: ['温柔'],
     interaction_mode: 'work',
     proactive_mode: 'greet',
@@ -362,7 +475,20 @@ const live2dDebugState = {
     currentCharacter,
     idleActive: false,
     talkingActive: false,
+    promoCaptureMode: false,
     hiyoriActions: null as Record<HiyoriAction, string> | null,
+};
+
+const PERSONA_TAG_MAP: Record<PersonaType, string[]> = {
+    warm: ['温柔', '治愈'],
+    energetic: ['元气', '温柔'],
+    companion: ['安静', '治愈'],
+};
+
+const PERSONA_LABEL_MAP: Record<PersonaType, string> = {
+    warm: '温柔型',
+    energetic: '元气型',
+    companion: '陪伴型',
 };
 let stateIndicatorMode: CompanionState | null = null;
 
@@ -639,12 +765,91 @@ function maybeConsumeProactiveGate(trigger: ProactiveTriggerType, key: string): 
     return true;
 }
 
+function pickNonRepeatingVariant(key: keyof typeof lastProactiveLineByTrigger, lines: readonly string[]) {
+    const previous = lastProactiveLineByTrigger[key];
+    const filtered = lines.filter((line) => line !== previous);
+    const pool = filtered.length > 0 ? filtered : lines;
+    const next = pool[Math.floor(Math.random() * pool.length)] ?? lines[0];
+    lastProactiveLineByTrigger[key] = next;
+    return next;
+}
+
 function getProactiveLine(trigger: ProactiveTriggerType, now: Date): string {
-    if (trigger === 'morning_greeting') return '早呀，今天也一起慢慢开始吧。';
-    if (trigger === 'night_greeting') return '不早啦，忙完的话也记得早点休息。';
-    if (trigger === 'long_work_session') return '你已经坐挺久啦，要不要起来活动一下？';
-    if (trigger === 'meal_time') return now.getHours() < 14 ? '差不多到饭点了，记得照顾一下自己。' : '晚饭时间快到了，别让自己太晚吃饭哦。';
+    if (trigger === 'morning_greeting') return pickNonRepeatingVariant('morning_greeting', proactiveLineOptions.morning_greeting);
+    if (trigger === 'night_greeting') return pickNonRepeatingVariant('night_greeting', proactiveLineOptions.night_greeting);
+    if (trigger === 'long_work_session') return pickNonRepeatingVariant('long_work_session', proactiveLineOptions.long_work_session);
+    if (trigger === 'meal_time') {
+        return now.getHours() < 14
+            ? pickNonRepeatingVariant('meal_time', proactiveLineOptions.meal_time_lunch)
+            : pickNonRepeatingVariant('meal_time', proactiveLineOptions.meal_time_dinner);
+    }
     return '我帮你看了一眼今天天气。';
+}
+
+function getProactiveVoiceLine(trigger: ProactiveTriggerType, text: string) {
+    if (voiceManager.hasPhrase(text)) {
+        return text;
+    }
+
+    if (trigger === 'weather_update') {
+        return pickNonRepeatingVariant('weather_update', proactiveVoiceFallbackOptions.weather_update);
+    }
+
+    if (trigger === 'care_followup') {
+        return pickNonRepeatingVariant('care_followup', proactiveVoiceFallbackOptions.care_followup);
+    }
+
+    return text;
+}
+
+function shouldAutoPlayProactiveVoice(trigger: ProactiveTriggerType) {
+    if (!appSettings.voice_enabled || appSettings.voice_auto_play_mode === 'off') {
+        return false;
+    }
+
+    if (appSettings.voice_auto_play_mode === 'all') {
+        return true;
+    }
+
+    return proactiveVoicePreferredTriggers.has(trigger);
+}
+
+function getProactiveMotionGroups(trigger: ProactiveTriggerType) {
+    const behavior = getCurrentBehavior();
+
+    if (trigger === 'morning_greeting') {
+        return behavior.greetGroups;
+    }
+
+    if (trigger === 'night_greeting') {
+        return behavior.listenGroups.length > 0 ? behavior.listenGroups : behavior.greetGroups;
+    }
+
+    if (trigger === 'care_followup') {
+        return behavior.listenGroups.length > 0 ? behavior.listenGroups : behavior.talkGroups;
+    }
+
+    if (trigger === 'long_work_session' || trigger === 'meal_time') {
+        return behavior.talkGroups.length > 0 ? behavior.talkGroups : behavior.greetGroups;
+    }
+
+    return behavior.greetGroups;
+}
+
+function getProactiveEmotion(trigger: ProactiveTriggerType): ReplyEmotion {
+    if (trigger === 'morning_greeting') {
+        return 'happy';
+    }
+
+    if (trigger === 'night_greeting') {
+        return 'calm';
+    }
+
+    if (trigger === 'care_followup') {
+        return 'concerned';
+    }
+
+    return 'calm';
 }
 
 async function getProactiveWeatherLine(): Promise<string> {
@@ -672,13 +877,15 @@ async function getProactiveFollowupLine(): Promise<string | null> {
 async function showProactiveBubble(trigger: ProactiveTriggerType, text: string) {
     pendingProactiveChatSeed = text;
     showReactionBubble(text);
-    if (appSettings.voice_enabled && appSettings.voice_auto_play_mode !== 'off') {
-        void voiceManager.playPhrase(text);
+    if (shouldAutoPlayProactiveVoice(trigger)) {
+        const spokenLine = getProactiveVoiceLine(trigger, text);
+        void voiceManager.unlock().then(() => voiceManager.speakText(spokenLine));
     }
     if (app?.screen) {
         animateFocus(app.screen.width * 0.5, app.screen.height * 0.24, 1200);
     }
-    await playMotionFromGroups(getCurrentBehavior().greetGroups);
+    void playExpressionByCandidates(getReplyEmotionExpressionCandidates(getProactiveEmotion(trigger)));
+    await playMotionFromGroups(getProactiveMotionGroups(trigger));
     logProductEvent('proactive_bubble_shown', { trigger, text });
 }
 
@@ -778,6 +985,11 @@ function updateChatStatus(state: CompanionState) {
     const statusText = document.getElementById('chat-status-text');
     if (!status || !statusText) return;
 
+    if (promoCaptureMode && (state === 'thinking' || state === 'searching' || state === 'composing')) {
+        status.classList.remove('visible');
+        return;
+    }
+
     const labelMap: Partial<Record<CompanionState, string>> = {
         listening: '在听你说',
         thinking: '想一下',
@@ -799,6 +1011,13 @@ function updateChatStatus(state: CompanionState) {
 
 function updateCompanionStateFeedback(state: CompanionState, previousState?: CompanionState) {
     const stateChanged = previousState !== state;
+
+    if (promoCaptureMode && (state === 'thinking' || state === 'searching' || state === 'composing')) {
+        hidePersistentIndicator();
+        stateIndicatorMode = null;
+        return;
+    }
+
     if (state === 'sleeping') {
         showPersistentIndicator('晚安模式');
         if (currentModel) {
@@ -879,7 +1098,8 @@ async function loadAppSettings(options: {
             user_display_name: data.user_display_name ?? '主人',
             character_type: data.character_type ?? 'mao_pro_zh',
             character_name: data.character_name ?? 'Mao',
-            personality: data.personality ?? ['温柔'],
+            persona_type: normalizePersonaType((data as Partial<AppSettings>).persona_type),
+            personality: data.personality ?? getPersonaTags(normalizePersonaType((data as Partial<AppSettings>).persona_type)),
             interaction_mode: data.interaction_mode ?? 'work',
             proactive_mode: data.proactive_mode ?? 'greet',
             voice_enabled: data.voice_enabled ?? true,
@@ -935,6 +1155,7 @@ async function saveAppSettings() {
 
     try {
         await invoke('save_frontend_config_file', { payload: JSON.stringify(appSettings) });
+        await syncDerivedCompanionDocs();
     } catch (error) {
         console.warn('Failed to save config.', error);
     }
@@ -1114,7 +1335,10 @@ function parseFrontendMemories(raw: string): FrontendMemoryItem[] {
         if (!Array.isArray(parsed)) {
             return [];
         }
-        return parsed.filter((item) => item && typeof item.content === 'string' && typeof item.scope === 'string');
+        return parsed.filter((item) => item && typeof item.content === 'string' && typeof item.scope === 'string').map((item) => ({
+            ...item,
+            created_at: typeof item.created_at === 'string' ? item.created_at : new Date().toISOString(),
+        }));
     } catch {
         return [];
     }
@@ -1158,6 +1382,7 @@ function persistFrontendMemories() {
     void invoke('save_frontend_memory_file', { payload }).catch((error) => {
         console.warn('Failed to save frontend memory file.', error);
     });
+    void syncDerivedCompanionDocs();
 }
 
 function persistFrontendHistory() {
@@ -1165,6 +1390,7 @@ function persistFrontendHistory() {
     void invoke('save_frontend_history_file', { payload }).catch((error) => {
         console.warn('Failed to save frontend history file.', error);
     });
+    void syncDerivedCompanionDocs();
 }
 
 function cleanupFrontendHistory(persist = true) {
@@ -1195,22 +1421,55 @@ function clearFrontendHistory() {
     persistFrontendHistory();
 }
 
-function addFrontendMemory(content: string, scope: FrontendMemoryItem['scope']) {
+function cleanupFrontendMemories(persist = true) {
+    const shortTermCutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    const latestShortTerm = frontendMemoriesCache
+        .filter((item) => item.scope === 'short_term')
+        .filter((item) => {
+            const ts = Date.parse(item.created_at);
+            return Number.isFinite(ts) && ts >= shortTermCutoff;
+        })
+        .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+        .slice(0, 10)
+        .map((item) => item.id);
+    const latestShortTermIds = new Set(latestShortTerm);
+
+    frontendMemoriesCache = frontendMemoriesCache
+        .filter((item) => {
+            if (item.scope !== 'short_term') {
+                return true;
+            }
+            return latestShortTermIds.has(item.id);
+        })
+        .slice(0, 30);
+
+    if (persist) {
+        persistFrontendMemories();
+    }
+}
+
+function addFrontendMemory(content: string, scope: FrontendMemoryItem['scope'], kind?: FrontendMemoryItem['kind']) {
     const normalized = content.trim();
     if (!normalized) {
         return;
     }
-    if (frontendMemoriesCache.some((item) => item.content === normalized && item.scope === scope)) {
+
+    if (kind && (kind === 'reply_style' || kind === 'taste' || kind === 'current_project' || kind === 'current_focus')) {
+        frontendMemoriesCache = frontendMemoriesCache.filter((item) => item.kind !== kind);
+    }
+
+    if (frontendMemoriesCache.some((item) => item.content === normalized && item.scope === scope && item.kind === kind)) {
         return;
     }
+
     frontendMemoriesCache.unshift({
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         content: normalized,
         scope,
+        kind,
         created_at: new Date().toISOString(),
     });
-    frontendMemoriesCache = frontendMemoriesCache.slice(0, 30);
-    persistFrontendMemories();
+    cleanupFrontendMemories();
 }
 
 function deleteFrontendMemory(memoryId: string) {
@@ -1224,19 +1483,43 @@ function extractFrontendMemoryCandidates(message: string): FrontendMemoryCandida
 
     const explicitRememberMatch = normalized.match(/(?:记住|记一下|帮我记住|你要记得|以后别忘了|请记得)(.+)$/);
     if (explicitRememberMatch?.[1]) {
-        candidates.push({ content: explicitRememberMatch[1].trim(), scope: 'long_term', explicit: true });
-    }
-
-    if (normalized.includes('叫我')) {
-        candidates.push({ content: normalized, scope: 'preference', explicit: false });
+        candidates.push({ content: explicitRememberMatch[1].trim(), scope: 'long_term', kind: 'preference', explicit: true });
     }
 
     if (normalized.includes('我喜欢') || normalized.includes('我不喜欢')) {
-        candidates.push({ content: normalized, scope: 'preference', explicit: false });
+        candidates.push({ content: normalized, scope: 'preference', kind: 'taste', explicit: false });
     }
 
-    if (normalized.includes('最近在做') || normalized.includes('最近在准备') || normalized.includes('这周在做')) {
-        candidates.push({ content: normalized, scope: 'short_term', explicit: false });
+    if (
+        normalized.includes('简短一点')
+        || normalized.includes('说短一点')
+        || normalized.includes('别太长')
+        || normalized.includes('不要太长')
+        || normalized.includes('详细一点')
+        || normalized.includes('说具体一点')
+        || normalized.includes('别太官方')
+        || normalized.includes('自然一点')
+    ) {
+        candidates.push({ content: normalized, scope: 'preference', kind: 'reply_style', explicit: false });
+    }
+
+    if (
+        normalized.includes('最近在做')
+        || normalized.includes('最近在准备')
+        || normalized.includes('这周在做')
+        || normalized.includes('最近在忙')
+        || normalized.includes('这阵子在搞')
+    ) {
+        candidates.push({ content: normalized, scope: 'short_term', kind: 'current_project', explicit: false });
+    }
+
+    if (
+        normalized.includes('最近有点累')
+        || normalized.includes('这几天有点累')
+        || normalized.includes('最近压力有点大')
+        || normalized.includes('这周有点忙')
+    ) {
+        candidates.push({ content: normalized, scope: 'short_term', kind: 'current_focus', explicit: false });
     }
 
     return candidates;
@@ -1245,7 +1528,7 @@ function extractFrontendMemoryCandidates(message: string): FrontendMemoryCandida
 function persistFrontendMemoryCandidates(message: string) {
     const candidates = extractFrontendMemoryCandidates(message);
     candidates.forEach((item) => {
-        addFrontendMemory(item.content, item.scope);
+        addFrontendMemory(item.content, item.scope, item.kind);
     });
     return candidates;
 }
@@ -1257,13 +1540,14 @@ function buildMemoryAcknowledgement(candidates: FrontendMemoryCandidate[]) {
     }
 
     if (explicitCandidates.length === 1) {
-        return `我记住了：${explicitCandidates[0].content}`;
+        return pickNonRepeatingVariant('memory_ack_single', memoryAcknowledgementOptions.single);
     }
 
-    return `我记住了这几件事：${explicitCandidates.map((item) => item.content).join('；')}`;
+    return pickNonRepeatingVariant('memory_ack_multi', memoryAcknowledgementOptions.multi);
 }
 
 function buildFrontendMemorySummary() {
+    cleanupFrontendMemories(false);
     const stored = frontendMemoriesCache;
     const derived: FrontendMemoryItem[] = [
         {
@@ -1286,7 +1570,11 @@ function buildFrontendMemorySummary() {
         },
     ];
 
-    return [...derived, ...stored].slice(0, 12);
+    const preference = stored.filter((item) => item.scope === 'preference').slice(0, 4);
+    const shortTerm = stored.filter((item) => item.scope === 'short_term').slice(0, 3);
+    const longTerm = stored.filter((item) => item.scope === 'long_term').slice(0, 3);
+
+    return [...derived, ...preference, ...shortTerm, ...longTerm].slice(0, 12);
 }
 
 function buildFrontendMemoryContextMessages(): ChatMessage[] {
@@ -1294,10 +1582,25 @@ function buildFrontendMemoryContextMessages(): ChatMessage[] {
     if (memories.length === 0) {
         return [];
     }
-    const lines = memories.map((item) => `- ${item.content}`);
+
+    const preference = memories.filter((item) => item.scope === 'preference');
+    const shortTerm = memories.filter((item) => item.scope === 'short_term');
+    const longTerm = memories.filter((item) => item.scope === 'long_term');
+    const sections: string[] = [];
+
+    if (preference.length > 0) {
+        sections.push(`稳定偏好：\n${preference.map((item) => `- ${item.content}`).join('\n')}`);
+    }
+    if (shortTerm.length > 0) {
+        sections.push(`近期情况：\n${shortTerm.map((item) => `- ${item.content}`).join('\n')}`);
+    }
+    if (longTerm.length > 0) {
+        sections.push(`长期记忆：\n${longTerm.map((item) => `- ${item.content}`).join('\n')}`);
+    }
+
     return [{
         role: 'assistant',
-        content: `以下是你已经记住的陪伴信息，请自然地在回答里参考，不要生硬复述：\n${lines.join('\n')}`,
+        content: `以下是你已经记住的陪伴信息，请自然地参考，不要生硬复述，也不要假装知道更多：\n${sections.join('\n\n')}`,
     }];
 }
 
@@ -1308,6 +1611,309 @@ function buildFrontendHistoryContextMessages(): ChatMessage[] {
         content: item.content,
         timestamp: item.timestamp,
     }));
+}
+
+function dedupeTextItems(items: string[]) {
+    const seen = new Set<string>();
+    const results: string[] = [];
+    items.forEach((item) => {
+        const normalized = item.trim();
+        if (!normalized || seen.has(normalized)) {
+            return;
+        }
+        seen.add(normalized);
+        results.push(normalized);
+    });
+    return results;
+}
+
+function getPersonaLabel(persona: PersonaType) {
+    return PERSONA_LABEL_MAP[persona] ?? PERSONA_LABEL_MAP.warm;
+}
+
+function buildPreferencesMarkdown() {
+    const preferenceMemories = frontendMemoriesCache
+        .filter((item) => item.scope === 'preference')
+        .slice(0, 12);
+    const replyStyle = preferenceMemories
+        .filter((item) => item.kind === 'reply_style')
+        .map((item) => item.content);
+    const taste = preferenceMemories
+        .filter((item) => item.kind === 'taste' || item.kind === 'preference')
+        .map((item) => item.content);
+
+    const outputPrefs = dedupeTextItems([
+        '默认使用中文',
+        '默认结构化输出',
+        '优先给结论，再补解释',
+        '能短就短，先保留节奏',
+        ...replyStyle,
+    ]);
+    const contentPrefs = dedupeTextItems([
+        `当前人格原型偏${getPersonaLabel(appSettings.persona_type)}`,
+        `当前互动模式偏${getInteractionModeLabel(appSettings.interaction_mode)}`,
+        `当前主动模式偏${appSettings.proactive_mode === 'quiet' ? '克制安静' : appSettings.proactive_mode === 'greet' ? '轻度主动' : '提醒推进'}`,
+        ...taste,
+    ]);
+
+    return [
+        '# preferences.md',
+        '',
+        '## 输出偏好',
+        ...outputPrefs.map((item) => `- ${item}`),
+        '',
+        '## 内容偏好',
+        ...contentPrefs.map((item) => `- ${item}`),
+        '',
+        '## 当前角色设定',
+        `- 角色名：${appSettings.character_name || 'Mao'}`,
+        `- 用户称呼：${appSettings.user_display_name || appSettings.user_nickname || '你'}`,
+        `- 当前人格原型：${getPersonaLabel(appSettings.persona_type)}`,
+        `- 内部气质标签：${appSettings.personality.join('、') || '温柔'}`,
+        '',
+        '## 说明',
+        '- 这是由前端现有设置和记忆自动派生的偏好摘要。',
+        '- 它是理解视图，不是独立主存储。',
+    ].join('\n');
+}
+
+function buildUserProfileMarkdown() {
+    const currentProject = frontendMemoriesCache
+        .filter((item) => item.kind === 'current_project')
+        .slice(0, 4)
+        .map((item) => item.content);
+    const stablePreferences = frontendMemoriesCache
+        .filter((item) => item.scope === 'preference')
+        .slice(0, 6)
+        .map((item) => item.content);
+
+    return [
+        '# user_profile.md',
+        '',
+        '## 基本信息',
+        `- 用户称呼：${appSettings.user_display_name || appSettings.user_nickname || '你'}`,
+        '- 常用语言：中文',
+        '- 当前使用场景：桌面陪伴 + 轻量协作',
+        '',
+        '## 当前角色关系',
+        `- 当前搭子名称：${appSettings.character_name || 'Mao'}`,
+        `- 当前人格原型：${getPersonaLabel(appSettings.persona_type)}`,
+        `- 当前互动模式：${getInteractionModeLabel(appSettings.interaction_mode)}`,
+        `- 当前主动模式：${appSettings.proactive_mode === 'quiet' ? '尽量安静' : appSettings.proactive_mode === 'greet' ? '有价值时打招呼' : '适合提醒推进'}`,
+        '',
+        '## 近期项目与关注点',
+        ...(currentProject.length > 0 ? currentProject.map((item) => `- ${item}`) : ['- 暂时还没有识别出稳定的近期项目。']),
+        '',
+        '## 稳定偏好线索',
+        ...(stablePreferences.length > 0 ? stablePreferences.map((item) => `- ${item}`) : ['- 暂时还没有足够多的稳定偏好样本。']),
+        '',
+        '## 说明',
+        '- 这是由前端现有设置和记忆自动派生的用户画像摘要。',
+        '- 它是理解视图，不是独立主存储。',
+    ].join('\n');
+}
+
+function buildReflectionMarkdown() {
+    const currentProject = frontendMemoriesCache
+        .filter((item) => item.kind === 'current_project')
+        .slice(0, 3)
+        .map((item) => item.content);
+    const currentFocus = frontendMemoriesCache
+        .filter((item) => item.kind === 'current_focus')
+        .slice(0, 3)
+        .map((item) => item.content);
+    const recentUserTopics = frontendHistoryCache
+        .filter((item) => item.role === 'user')
+        .slice(-6)
+        .map((item) => item.content.trim())
+        .filter(Boolean);
+
+    const observations = dedupeTextItems([
+        ...currentProject,
+        ...currentFocus,
+        ...recentUserTopics,
+    ]).slice(0, 8);
+
+    const stageGuess = currentProject.length > 0
+        ? '用户当前有明确推进中的事项，适合少解释、多推进。'
+        : '用户当前没有被系统识别出的稳定项目，适合继续观察和轻量陪伴。';
+
+    const nextStep = currentFocus.length > 0
+        ? '优先减少用户负担，先给一个更小的下一步。'
+        : '优先保持简短、稳定和可执行。';
+    const personaReflection = appSettings.persona_type === 'energetic'
+        ? '当前更适合轻快、鼓励式的推进方式。'
+        : appSettings.persona_type === 'companion'
+            ? '当前更适合克制、安静、陪着用户继续。'
+            : '当前更适合温和、安抚、轻推式回应。';
+
+    return [
+        '# reflection.md',
+        '',
+        '## 最近观察',
+        ...(observations.length > 0 ? observations.map((item) => `- ${item}`) : ['- 暂时还没有足够多的观察样本。']),
+        '',
+        '## 当前阶段判断',
+        `- ${stageGuess}`,
+        `- ${personaReflection}`,
+        '',
+        '## 当前状态信号',
+        ...(currentFocus.length > 0 ? currentFocus.map((item) => `- ${item}`) : ['- 暂时没有明显的短期压力或状态信号。']),
+        '',
+        '## 下一步陪伴建议',
+        `- ${nextStep}`,
+        '- 如果用户明确要深度分析，再展开更完整方案。',
+        '',
+        '## 说明',
+        '- 这是由前端记忆和近期历史自动生成的理解摘要。',
+        '- 它是反思层，不是原始聊天记录。',
+    ].join('\n');
+}
+
+function buildInteractionRulesMarkdown() {
+    return [
+        '# interaction_rules.md',
+        '',
+        '## 默认原则',
+        '- 不抢用户注意力',
+        '- 不频繁打断',
+        '- 默认简短回复',
+        '- 能给方案就不要只提问题',
+        '- 用户忙时更克制，用户低落时更温柔',
+        '',
+        '## 主动触发原则',
+        '- 只有在有明确价值时才主动出现',
+        '- 如果用户处于专注状态，优先保持安静',
+        '- 如果用户明确需要推进，可以给一个更小的下一步',
+        '',
+        '## 响应等级',
+        '- L1：轻提示，一句话即可',
+        '- L2：小建议，给 1 个可执行动作',
+        '- L3：协助推进，给 2 到 3 个选择',
+        '- L4：深度展开，仅在用户明确要求时使用',
+        '',
+        '## 禁止事项',
+        '- 不连续追问',
+        '- 不说教',
+        '- 不装懂',
+        '- 不把陪伴做成控制',
+    ].join('\n');
+}
+
+function buildPreferencesContextMessage() {
+    const preferenceMemories = frontendMemoriesCache
+        .filter((item) => item.scope === 'preference')
+        .slice(0, 8)
+        .map((item) => item.content);
+
+    const items = dedupeTextItems([
+        '默认使用中文',
+        '默认结构化输出',
+        '优先给结论，再补解释',
+        '默认简短回复，减少废话',
+        ...preferenceMemories,
+    ]);
+
+    if (items.length === 0) {
+        return null;
+    }
+
+    return {
+        role: 'assistant' as const,
+        content: `以下是用户已经表现出的输出与沟通偏好。当前人格原型是${getPersonaLabel(appSettings.persona_type)}，请优先贴合这些偏好：\n${items.map((item) => `- ${item}`).join('\n')}`,
+    };
+}
+
+function buildReflectionContextMessage() {
+    const currentProject = frontendMemoriesCache
+        .filter((item) => item.kind === 'current_project')
+        .slice(0, 3)
+        .map((item) => item.content);
+    const currentFocus = frontendMemoriesCache
+        .filter((item) => item.kind === 'current_focus')
+        .slice(0, 3)
+        .map((item) => item.content);
+    const recentUserTopics = frontendHistoryCache
+        .filter((item) => item.role === 'user')
+        .slice(-5)
+        .map((item) => item.content.trim())
+        .filter(Boolean);
+
+    const observations = dedupeTextItems([
+        ...currentProject,
+        ...currentFocus,
+        ...recentUserTopics,
+    ]).slice(0, 6);
+
+    if (observations.length === 0) {
+        return null;
+    }
+
+    return {
+        role: 'assistant' as const,
+        content: `以下是对用户当前阶段和近期状态的内部总结。当前人格原型是${getPersonaLabel(appSettings.persona_type)}，请据此更贴合地回应：\n${observations.map((item) => `- ${item}`).join('\n')}`,
+    };
+}
+
+function buildUserProfileContextMessage() {
+    const currentProject = frontendMemoriesCache
+        .filter((item) => item.kind === 'current_project')
+        .slice(0, 3)
+        .map((item) => item.content);
+    const stablePreferences = frontendMemoriesCache
+        .filter((item) => item.scope === 'preference')
+        .slice(0, 5)
+        .map((item) => item.content);
+
+    const lines = dedupeTextItems([
+        `用户称呼偏好：${appSettings.user_display_name || appSettings.user_nickname || '你'}`,
+        `当前人格原型：${getPersonaLabel(appSettings.persona_type)}`,
+        `当前互动模式：${getInteractionModeLabel(appSettings.interaction_mode)}`,
+        `当前主动模式：${appSettings.proactive_mode === 'quiet' ? '尽量安静' : appSettings.proactive_mode === 'greet' ? '有价值时打招呼' : '适合提醒推进'}`,
+        ...currentProject,
+        ...stablePreferences,
+    ]);
+
+    return {
+        role: 'assistant' as const,
+        content: `以下是当前用户画像摘要，请把它当作长期理解背景：\n${lines.map((item) => `- ${item}`).join('\n')}`,
+    };
+}
+
+function buildInteractionRulesContextMessage() {
+    return {
+        role: 'assistant' as const,
+        content: [
+            '以下是陪伴互动规则，请严格遵守：',
+            `- 当前人格原型：${getPersonaLabel(appSettings.persona_type)}。`,
+            '- 默认简短回复，不抢注意力。',
+            '- 用户忙时更克制，用户低落时更温柔。',
+            '- 能给方案就不要只提问题。',
+            '- 只有在有明确价值时才主动。',
+            '- 用户没有要求时，不要长篇展开。',
+        ].join('\n'),
+    };
+}
+
+function buildFrontendProfileContextMessages(): ChatMessage[] {
+    const messages = [
+        buildUserProfileContextMessage(),
+        buildPreferencesContextMessage(),
+        buildReflectionContextMessage(),
+        buildInteractionRulesContextMessage(),
+    ].filter((item): item is ChatMessage => Boolean(item));
+    return messages;
+}
+
+async function syncDerivedCompanionDocs() {
+    try {
+        await invoke('save_frontend_user_profile_file', { payload: buildUserProfileMarkdown() });
+        await invoke('save_frontend_preferences_file', { payload: buildPreferencesMarkdown() });
+        await invoke('save_frontend_reflection_file', { payload: buildReflectionMarkdown() });
+        await invoke('save_frontend_interaction_rules_file', { payload: buildInteractionRulesMarkdown() });
+    } catch (error) {
+        console.warn('Failed to sync derived companion docs.', error);
+    }
 }
 
 function isRemoteBackendMode() {
@@ -1582,6 +2188,17 @@ function getStateExpressionCandidates(state: CompanionState): string[] {
 }
 
 function selectSpeakingMotionGroups(emotion: ReplyEmotion, context: ReplyContext): string[] {
+    if (promoCaptureMode) {
+        if (isHiyoriCharacter()) {
+            return ['Idle'];
+        }
+        if (currentCharacter === 'mao_pro_zh') {
+            return ['Talk'];
+        }
+        const behavior = getCurrentBehavior();
+        return behavior.talkGroups.slice(0, 1).length > 0 ? behavior.talkGroups.slice(0, 1) : behavior.idleGroups.slice(0, 1);
+    }
+
     const behavior = getCurrentBehavior();
     const merged = [
         ...(behavior.contextTalkGroups?.[context] ?? []),
@@ -1608,31 +2225,43 @@ function updateCharacterLabel() {
     updateChatTitle();
 }
 
-function normalizeFirstRunPersonalityTags(tags: string[]) {
-    const uniqueTags = Array.from(new Set(tags));
-    const limitedTags = uniqueTags.slice(0, 3);
-    return limitedTags.length > 0 ? limitedTags : ['温柔'];
+function getPersonaTags(persona: PersonaType) {
+    return PERSONA_TAG_MAP[persona] ?? PERSONA_TAG_MAP.warm;
 }
 
-function syncFirstRunPersonalitySelection() {
-    const personalitySelect = document.getElementById('creator-personality-select') as HTMLSelectElement | null;
-    if (!personalitySelect) {
-        return ['温柔'];
+function normalizePersonaType(value: string | null | undefined): PersonaType {
+    if (value === 'energetic' || value === 'companion' || value === 'warm') {
+        return value;
     }
+    return 'warm';
+}
 
-    const selectedTags = normalizeFirstRunPersonalityTags(
-        Array.from(personalitySelect.selectedOptions).map((option) => option.value),
-    );
-    Array.from(personalitySelect.options).forEach((option) => {
-        option.selected = selectedTags.includes(option.value);
-    });
-    return selectedTags;
+function inferPersonaTypeFromTags(tags: string[]) {
+    const normalized = Array.from(new Set(tags)).sort().join('|');
+    for (const persona of Object.keys(PERSONA_TAG_MAP) as PersonaType[]) {
+        if (Array.from(new Set(PERSONA_TAG_MAP[persona])).sort().join('|') === normalized) {
+            return persona;
+        }
+    }
+    if (tags.includes('元气')) return 'energetic';
+    if (tags.includes('安静')) return 'companion';
+    return 'warm';
+}
+
+function syncFirstRunPersonaSelection() {
+    const personaSelect = document.getElementById('creator-persona-select') as HTMLSelectElement | null;
+    const persona = normalizePersonaType(personaSelect?.value);
+    if (personaSelect) {
+        personaSelect.value = persona;
+    }
+    return persona;
 }
 
 function applyActiveCompanion(active: CompanionProfile) {
     appSettings.character_name = active.name;
     appSettings.character_type = active.character_type;
-    appSettings.personality = active.personality_tags.length > 0 ? active.personality_tags : ['温柔'];
+    appSettings.persona_type = inferPersonaTypeFromTags(active.personality_tags);
+    appSettings.personality = active.personality_tags.length > 0 ? active.personality_tags : getPersonaTags(appSettings.persona_type);
     appSettings.interaction_mode = active.interaction_mode;
     currentCharacter = live2dModels[active.character_type] ? active.character_type : 'mao_pro_zh';
 }
@@ -1702,9 +2331,9 @@ function hideFirstRunPanel() {
 }
 
 function bindFirstRunCreator() {
-    const personalitySelect = document.getElementById('creator-personality-select') as HTMLSelectElement | null;
-    personalitySelect?.addEventListener('change', () => {
-        syncFirstRunPersonalitySelection();
+    const personaSelect = document.getElementById('creator-persona-select') as HTMLSelectElement | null;
+    personaSelect?.addEventListener('change', () => {
+        syncFirstRunPersonaSelection();
     });
 
     const submitButton = document.getElementById('creator-submit-btn');
@@ -1718,7 +2347,8 @@ function bindFirstRunCreator() {
 
         const name = nameInput?.value.trim() || 'Mao';
         const characterType = characterSelect?.value || 'mao_pro_zh';
-        const personalityTags = syncFirstRunPersonalitySelection();
+        const personaType = syncFirstRunPersonaSelection();
+        const personalityTags = getPersonaTags(personaType);
         const interactionMode = modeSelect?.value || 'work';
 
         submitButton.setAttribute('disabled', 'true');
@@ -1767,9 +2397,9 @@ function syncCompanionSettingsForm() {
         nameInput.value = appSettings.character_name;
     }
 
-    const personalitySelect = document.getElementById('personality-select') as HTMLSelectElement | null;
-    if (personalitySelect) {
-        personalitySelect.value = appSettings.personality[0] || '温柔';
+    const personaSelect = document.getElementById('persona-select') as HTMLSelectElement | null;
+    if (personaSelect) {
+        personaSelect.value = appSettings.persona_type;
     }
 
     const interactionModeSelect = document.getElementById('interaction-mode-select') as HTMLSelectElement | null;
@@ -1977,9 +2607,10 @@ function bindCompanionSettingsForm() {
         void saveAppSettings();
     });
 
-    const personalitySelect = document.getElementById('personality-select') as HTMLSelectElement | null;
-    personalitySelect?.addEventListener('change', () => {
-        appSettings.personality = [personalitySelect.value || '温柔'];
+    const personaSelect = document.getElementById('persona-select') as HTMLSelectElement | null;
+    personaSelect?.addEventListener('change', () => {
+        appSettings.persona_type = normalizePersonaType(personaSelect.value);
+        appSettings.personality = getPersonaTags(appSettings.persona_type);
         syncCompanionSettingsForm();
         void saveAppSettings();
     });
@@ -2844,6 +3475,7 @@ function scheduleIdleLoop() {
 
 function startTalkingAnimation(text: string, emotion: ReplyEmotion = 'calm', context: ReplyContext = 'general') {
     const duration = Math.min(5000, Math.max(900, text.length * 90));
+    const useGentlePromoTalking = promoCaptureMode;
 
     if (talkLoopTimer !== null) {
         window.clearInterval(talkLoopTimer);
@@ -2879,10 +3511,12 @@ function startTalkingAnimation(text: string, emotion: ReplyEmotion = 'calm', con
         setLipSyncValue(0.2 + Math.random() * 0.8);
     }, 120);
 
-    talkMotionTimer = window.setInterval(() => {
-        if (sessionId !== talkingSessionId) return;
-        void playMotionFromGroups(speakingMotionGroups);
-    }, 1100);
+    if (!useGentlePromoTalking) {
+        talkMotionTimer = window.setInterval(() => {
+            if (sessionId !== talkingSessionId) return;
+            void playMotionFromGroups(speakingMotionGroups);
+        }, 1100);
+    }
 
     talkStopTimer = window.setTimeout(() => {
         if (sessionId !== talkingSessionId) return;
@@ -2897,7 +3531,9 @@ function startTalkingAnimation(text: string, emotion: ReplyEmotion = 'calm', con
         talkStopTimer = null;
         setLipSyncValue(0);
         live2dDebugState.talkingActive = false;
-        animateNod();
+        if (!useGentlePromoTalking) {
+            animateNod();
+        }
         setCompanionState('idle');
     }, duration);
 }
@@ -3056,6 +3692,7 @@ declare global {
             triggerProactiveBubble: (trigger: ProactiveTriggerType, text: string) => Promise<void>;
             fitCurrentModelForPreview: () => boolean;
             getCurrentModelPreviewBounds: () => { x: number; y: number; width: number; height: number } | null;
+            setPromoCaptureMode: (enabled: boolean) => void;
             switchCharacter: (modelKey: string) => void;
             switchCharacterAndWait: (modelKey: string) => Promise<boolean>;
             openChat: () => Promise<void>;
@@ -3113,6 +3750,10 @@ window.__desktopCompanionDebug = {
         await showProactiveBubble(trigger, text);
     },
     fitCurrentModelForPreview: () => fitCurrentModelForPreview(),
+    setPromoCaptureMode: (enabled: boolean) => {
+        promoCaptureMode = enabled;
+        live2dDebugState.promoCaptureMode = enabled;
+    },
     getCurrentModelPreviewBounds: () => {
         if (!currentModel?.getBounds) {
             return null;
@@ -3495,7 +4136,8 @@ function closeSettingsPanel() {
 function bindStandaloneWindowDrag(handleSelector: string, rootSelector?: string) {
     const root = rootSelector ? document.querySelector<HTMLElement>(rootSelector) : document;
     const handle = root?.querySelector<HTMLElement>(handleSelector) ?? null;
-    if (!handle) return;
+    if (!handle || handle.dataset.boundDrag === 'true') return;
+    handle.dataset.boundDrag = 'true';
 
     handle.addEventListener('pointerdown', (event) => {
         if (event.button !== 0) return;
@@ -3636,6 +4278,10 @@ async function emitCompanionStateRequest(payload: CompanionStateRequest) {
 }
 
 function applyCompanionStateRequest(payload: CompanionStateRequest) {
+    if (promoCaptureMode && payload.type === 'thinking') {
+        return;
+    }
+
     if (payload.type === 'listening') {
         setCompanionState('listening');
         return;
@@ -3672,12 +4318,16 @@ async function sendMessage(options: SendMessageOptions = {}) {
     void emitCompanionStateRequest({ type: 'listening' });
     addMessage('user', text);
     logProductEvent('message_sent', { length: text.length, character: currentCharacter });
-    void triggerCharacterAttention();
+    if (!promoCaptureMode) {
+        void triggerCharacterAttention();
+    }
     let assistantMessageContent: HTMLDivElement | null = null;
 
     try {
-        setCompanionState('thinking');
-        void emitCompanionStateRequest({ type: 'thinking' });
+        if (!promoCaptureMode) {
+            setCompanionState('thinking');
+            void emitCompanionStateRequest({ type: 'thinking' });
+        }
         let assistantContent = '';
         assistantMessageContent = addLoadingAssistantMessage();
         const memoryAcknowledgement = buildMemoryAcknowledgement(memoryCandidates);
@@ -3697,6 +4347,9 @@ async function sendMessage(options: SendMessageOptions = {}) {
                 scrollChatToBottom();
             },
             (state) => {
+                if (promoCaptureMode && (state === 'thinking' || state === 'searching' || state === 'composing')) {
+                    return;
+                }
                 if (state === 'thinking' || state === 'searching' || state === 'composing') {
                     setCompanionState(state);
                 }
@@ -3716,7 +4369,7 @@ async function sendMessage(options: SendMessageOptions = {}) {
                 ackDiv.parentElement?.classList.add('memory-ack');
             }
             if (appSettings.voice_enabled) {
-                void voiceManager.playPhrase('我记住了。');
+                void voiceManager.unlock().then(() => voiceManager.speakText(memoryAcknowledgement));
             }
         }
         void refreshMemoryList();
@@ -4279,6 +4932,26 @@ async function initializeStandaloneModelWindow() {
     bindStandaloneWindowDrag('.settings-header', '#model-panel');
 }
 
+async function initializeStandaloneCleanupWindow() {
+    document.body.dataset.windowLabel = 'cleanup';
+    const panel = document.getElementById('cleanup-window');
+    if (panel) {
+        panel.classList.add('visible');
+    }
+
+    setCleanupFilter('all');
+    renderCleanupResults(lastCleanupResults);
+    updateCleanupStatus('你可以先分析主要占用目录，再决定清缓存、删旧文件还是卸载软件。');
+
+    await getCurrentWebviewWindow().listen('cleanup-open-requested', async () => {
+        openCleanupWindow();
+        await getCurrentWindow().show();
+        await getCurrentWindow().setFocus();
+    });
+
+    bindStandaloneWindowDrag('.cleanup-scan-header', '#cleanup-window');
+}
+
 async function promptImportModel() {
     const modelPath = window.prompt('请输入已解压模型的 model3.json 完整路径');
     if (!modelPath) return;
@@ -4359,6 +5032,9 @@ function bindContextMenuActions() {
     const menu = document.getElementById('context-menu');
     if (!menu) return;
 
+    const toolboxButton = menu.querySelector<HTMLElement>('[data-action="toolbox"]');
+    toolboxButton?.addEventListener('click', openToolboxModal);
+
     const modelPickerButton = menu.querySelector<HTMLElement>('[data-action="model-picker"]');
     modelPickerButton?.addEventListener('click', () => {
         hideContextMenu();
@@ -4386,6 +5062,709 @@ function showSettings() {
     console.log('⚙️ 打开设置');
     hideContextMenu();
     openSettingsPanel();
+}
+
+function formatPomodoroTime(totalSeconds: number) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+function getPomodoroPhaseDuration(phase: 'focus' | 'break') {
+    return phase === 'focus' ? 25 * 60 : 5 * 60;
+}
+
+function getPomodoroFinishLine(phase: 'focus' | 'break') {
+    return phase === 'focus'
+        ? '这一轮专注结束啦，记得起来缓一下。'
+        : '休息时间差不多啦，准备回到下一轮专注吧。';
+}
+
+function updatePomodoroPanel() {
+    const timeEl = document.getElementById('pomodoro-time');
+    const statusEl = document.getElementById('pomodoro-status');
+    const toggleBtn = document.getElementById('pomodoro-toggle-btn') as HTMLButtonElement | null;
+
+    if (timeEl) {
+        timeEl.textContent = formatPomodoroTime(pomodoroRemainingSeconds);
+    }
+
+    if (statusEl) {
+        if (pomodoroRunning) {
+            statusEl.textContent = pomodoroPhase === 'focus'
+                ? '专注进行中，先把注意力留给眼前这件事。'
+                : '休息进行中，稍微放松一下也很好。';
+        } else if (pomodoroRemainingSeconds < getPomodoroPhaseDuration(pomodoroPhase) && pomodoroRemainingSeconds > 0) {
+            statusEl.textContent = pomodoroPhase === 'focus'
+                ? '已暂停，准备好了就继续专注。'
+                : '休息已暂停，想继续放松一下也可以。';
+        } else if (pomodoroRemainingSeconds === 0) {
+            statusEl.textContent = pomodoroPhase === 'focus'
+                ? '这一轮专注结束啦，准备开始 5 分钟休息。'
+                : '休息结束啦，准备回到下一轮专注。';
+        } else {
+            statusEl.textContent = pomodoroPhase === 'focus'
+                ? '准备开始一段 25 分钟专注时间'
+                : '准备开始 5 分钟休息';
+        }
+    }
+
+    if (toggleBtn) {
+        if (pomodoroRemainingSeconds === 0) {
+            toggleBtn.textContent = pomodoroPhase === 'focus' ? '开始休息' : '开始下一轮';
+        } else {
+            if (pomodoroRunning) {
+                toggleBtn.textContent = '暂停';
+            } else {
+                toggleBtn.textContent = pomodoroPhase === 'focus' ? '开始专注' : '开始休息';
+            }
+        }
+    }
+}
+
+function stopPomodoroTimer() {
+    if (pomodoroTimerHandle !== null) {
+        window.clearInterval(pomodoroTimerHandle);
+        pomodoroTimerHandle = null;
+    }
+    pomodoroRunning = false;
+}
+
+function resetPomodoroTimer() {
+    stopPomodoroTimer();
+    pomodoroPhase = 'focus';
+    pomodoroRemainingSeconds = 25 * 60;
+    updatePomodoroPanel();
+}
+
+function startPomodoroTimer() {
+    if (pomodoroRunning) {
+        return;
+    }
+    if (pomodoroRemainingSeconds <= 0) {
+        pomodoroPhase = pomodoroPhase === 'focus' ? 'break' : 'focus';
+        pomodoroRemainingSeconds = getPomodoroPhaseDuration(pomodoroPhase);
+    }
+
+    pomodoroRunning = true;
+    updatePomodoroPanel();
+    pomodoroTimerHandle = window.setInterval(() => {
+        pomodoroRemainingSeconds -= 1;
+        if (pomodoroRemainingSeconds <= 0) {
+            pomodoroRemainingSeconds = 0;
+            stopPomodoroTimer();
+            const finishedPhase = pomodoroPhase;
+            const finishLine = getPomodoroFinishLine(finishedPhase);
+            showReactionBubble(finishLine);
+            if (app?.screen) {
+                animateFocus(app.screen.width * 0.5, app.screen.height * 0.24, 1200);
+            }
+            void playExpressionByCandidates(getReplyEmotionExpressionCandidates(finishedPhase === 'focus' ? 'happy' : 'calm'));
+            void playMotionFromGroups(finishedPhase === 'focus' ? getCurrentBehavior().greetGroups : getCurrentBehavior().listenGroups);
+            if (appSettings.voice_enabled) {
+                void voiceManager.unlock().then(() => voiceManager.speakText(finishLine));
+            }
+        }
+        updatePomodoroPanel();
+    }, 1000);
+}
+
+function openPomodoroWindow() {
+    if (!isPomodoroStandaloneWindow()) {
+        hideContextMenu();
+        closeToolboxModal();
+        void invoke('show_pomodoro_window');
+        void getCurrentWebviewWindow().emitTo('pomodoro', 'pomodoro-open-requested', null);
+        return;
+    }
+
+    const panel = document.getElementById('pomodoro-window');
+    panel?.classList.add('visible');
+    updatePomodoroPanel();
+}
+
+function closePomodoroWindow() {
+    if (isPomodoroStandaloneWindow()) {
+        void invoke('hide_pomodoro_window');
+        return;
+    }
+
+    const panel = document.getElementById('pomodoro-window');
+    panel?.classList.remove('visible');
+}
+
+function updateCleanupStatus(text: string) {
+    const statusEl = document.getElementById('cleanup-status');
+    if (statusEl) {
+        statusEl.textContent = text;
+    }
+}
+
+function setCleanupFilter(filter: 'all' | 'high') {
+    cleanupResultFilter = filter;
+    document.getElementById('cleanup-filter-all')?.classList.toggle('active', filter === 'all');
+    document.getElementById('cleanup-filter-high')?.classList.toggle('active', filter === 'high');
+    renderCleanupResults(lastCleanupResults);
+}
+
+function setCleanupScanState(scanning: boolean) {
+    const panel = document.getElementById('cleanup-window');
+    if (panel) {
+        panel.dataset.scanning = scanning ? 'true' : 'false';
+    }
+}
+
+function clearCleanupScanStageTimers() {
+    cleanupScanStageTimers.forEach((timer) => window.clearTimeout(timer));
+    cleanupScanStageTimers = [];
+}
+
+function formatCleanupTotal(sizeBytes: number) {
+    const gb = sizeBytes / 1024 / 1024 / 1024;
+    if (gb >= 1) {
+        return `${gb.toFixed(2)} GB`;
+    }
+    const mb = sizeBytes / 1024 / 1024;
+    return `${Math.round(mb)} MB`;
+}
+
+function updateCleanupSummary(items: CleanupCandidate[]) {
+    const summary = document.getElementById('cleanup-summary');
+    if (!summary) {
+        return;
+    }
+
+    if (items.length === 0) {
+        summary.classList.remove('visible');
+        summary.textContent = '';
+        return;
+    }
+
+    const filteredItems = cleanupResultFilter === 'high'
+        ? items.filter((item) => item.priority === '高')
+        : items;
+    const totalSize = filteredItems.reduce((acc, item) => acc + item.size_bytes, 0);
+    const safeCount = items.filter((item) => item.tier === 'safe_to_clean').length;
+    const reviewCount = items.filter((item) => item.tier === 'review_recommended').length;
+    const cautionCount = items.filter((item) => item.tier === 'do_not_delete_directly').length;
+    const currentPath = cleanupNavigationStack[cleanupNavigationStack.length - 1];
+    summary.classList.add('visible');
+    if (cleanupResultFilter === 'high') {
+        summary.textContent = filteredItems.length > 0
+            ? `当前只显示 ${filteredItems.length} 个高优先级位置，合计约 ${formatCleanupTotal(totalSize)}。建议优先从这些大体积目录开始看。`
+            : '当前没有高优先级结果，你可以切回“全部结果”查看完整列表。';
+        return;
+    }
+    const uninstallCount = items.filter((item) => item.suggested_action === 'uninstall_app').length;
+    summary.textContent = currentPath
+        ? `当前正在看 ${currentPath} 的下一层内容，共有 ${items.length} 个较大的子项，合计约 ${formatCleanupTotal(totalSize)}。`
+        : `本次找到 ${items.length} 个值得关注的位置，合计约 ${formatCleanupTotal(totalSize)}。可优先清理 ${safeCount} 项，建议先查看 ${reviewCount} 项，谨慎处理 ${cautionCount} 项，另有 ${uninstallCount} 项可考虑卸载。`;
+}
+
+function buildCleanupRecommendationSummary(items: CleanupCandidate[]) {
+    if (items.length === 0) {
+        return '暂时没有发现明显偏大的候选位置。';
+    }
+
+    const safeItems = items.filter((item) => item.tier === 'safe_to_clean').slice(0, 3);
+    const slimmingItems = items.filter((item) => item.software_name && item.category.startsWith('软件')).slice(0, 3);
+    const reviewItems = items.filter((item) => item.tier === 'review_recommended').slice(0, 2);
+    const cautionItems = items.filter((item) => item.tier === 'do_not_delete_directly').slice(0, 2);
+    const uninstallItems = items.filter((item) => item.suggested_action === 'uninstall_app').slice(0, 2);
+    const userDirItems = items.filter((item) => item.category === '用户目录').slice(0, 2);
+    const appItems = items.filter((item) => item.category === '已安装软件').slice(0, 2);
+    const parts: string[] = [];
+
+    if (safeItems.length > 0) {
+        parts.push(`建议先处理 ${safeItems.map((item) => item.category).join('、')}，这类通常风险较低。`);
+    }
+    if (slimmingItems.length > 0) {
+        parts.push(`另外 ${slimmingItems.map((item) => item.display_name).join('、')} 这类软件数据更适合先做瘦身。`);
+    }
+    if (cleanupScanMode === 'deep' && userDirItems.length > 0) {
+        parts.push(`深度分析里，${userDirItems.map((item) => item.display_name).join('、')} 这类用户目录也比较占空间，更适合你手动筛掉旧文件、安装包或导出内容。`);
+    }
+    if (reviewItems.length > 0) {
+        parts.push(`像 ${reviewItems.map((item) => item.category).join('、')} 这类更适合先打开看看内容。`);
+    }
+    if (uninstallItems.length > 0) {
+        parts.push(`还可以留意 ${uninstallItems.map((item) => item.display_name || item.category).join('、')} 这类较大的已安装软件，确认长期不用后再卸载。`);
+    } else if (cleanupScanMode === 'deep' && appItems.length > 0) {
+        parts.push(`已安装软件里，${appItems.map((item) => item.display_name).join('、')} 体积比较大，但如果还在用，优先考虑清缓存或历史数据，不要直接删安装目录。`);
+    }
+    if (cautionItems.length > 0) {
+        parts.push(`系统目录或软件目录只建议查看，不建议直接删除。`);
+    }
+
+    return parts.join(' ');
+}
+
+function updateCleanupNavigation() {
+    const pathEl = document.getElementById('cleanup-current-path');
+    const backBtn = document.getElementById('cleanup-back-btn') as HTMLButtonElement | null;
+    const currentPath = cleanupNavigationStack[cleanupNavigationStack.length - 1] || '';
+    if (pathEl) {
+        pathEl.textContent = currentPath ? `当前目录：${currentPath}` : '当前视图：C盘主要目录';
+    }
+    if (backBtn) {
+        backBtn.hidden = cleanupNavigationStack.length === 0;
+    }
+}
+
+async function loadCleanupPath(path: string, pushHistory: boolean) {
+    updateCleanupStatus(`正在分析 ${path} 的下一层内容...`);
+    setCleanupScanState(true);
+    clearCleanupScanStageTimers();
+    try {
+        const results = await invoke<CleanupCandidate[]>('scan_cleanup_children', { path });
+        if (pushHistory) {
+            cleanupNavigationStack.push(path);
+        }
+        lastCleanupResults = results || [];
+        renderCleanupResults(lastCleanupResults);
+        updateCleanupNavigation();
+        updateCleanupStatus(lastCleanupResults.length > 0
+            ? `已展开 ${path}，下面是这一层按体积从大到小的结果。`
+            : `已展开 ${path}，这一层暂时没有更大的子项。`);
+    } catch (error) {
+        updateCleanupStatus(`展开失败：${String(error)}`);
+    } finally {
+        setCleanupScanState(false);
+    }
+}
+
+async function drillCleanupPath(path: string) {
+    await loadCleanupPath(path, true);
+}
+
+function goBackCleanupLevel() {
+    if (cleanupNavigationStack.length === 0) {
+        return;
+    }
+    cleanupNavigationStack.pop();
+    if (cleanupNavigationStack.length === 0) {
+        lastCleanupResults = rootCleanupResults;
+        renderCleanupResults(rootCleanupResults);
+        updateCleanupNavigation();
+        updateCleanupStatus('已回到 C 盘主要目录视图。');
+        return;
+    }
+
+    const parentPath = cleanupNavigationStack[cleanupNavigationStack.length - 1];
+    if (parentPath) {
+        void loadCleanupPath(parentPath, false);
+    }
+}
+
+function renderCleanupResults(items: CleanupCandidate[]) {
+    const container = document.getElementById('cleanup-results');
+    if (!container) {
+        return;
+    }
+
+    container.innerHTML = '';
+    const visibleItems = cleanupResultFilter === 'high'
+        ? items.filter((item) => item.priority === '高')
+        : items;
+    updateCleanupSummary(items);
+    if (visibleItems.length === 0) {
+        const empty = document.createElement('div');
+        empty.className = 'toolbox-result-item';
+        empty.innerHTML = cleanupResultFilter === 'high'
+            ? '<div class="toolbox-result-advice">当前没有高优先级结果，你可以切回全部结果继续看。</div>'
+            : '<div class="toolbox-result-advice">这一层暂时没有发现更大的目录或文件。</div>';
+        container.appendChild(empty);
+        return;
+    }
+
+    const orderedGroups = [
+        { key: 'safe_to_clean', label: '建议优先清理', filter: (item: CleanupCandidate) => item.tier === 'safe_to_clean' },
+        { key: 'slimming_data', label: '可瘦身的软件数据', filter: (item: CleanupCandidate) => Boolean(item.software_name) && item.category.startsWith('软件') },
+        { key: 'uninstall_app', label: '可考虑卸载的大软件', filter: (item: CleanupCandidate) => item.suggested_action === 'uninstall_app' },
+        { key: 'review_recommended', label: '建议先查看', filter: (item: CleanupCandidate) => item.tier === 'review_recommended' && item.suggested_action !== 'uninstall_app' && !(item.software_name && item.category.startsWith('软件')) },
+        { key: 'do_not_delete_directly', label: '不建议直接删除', filter: (item: CleanupCandidate) => item.tier === 'do_not_delete_directly' },
+    ] as const;
+
+    orderedGroups.forEach((group) => {
+        const groupItems = visibleItems.filter(group.filter);
+        if (!groupItems || groupItems.length === 0) {
+            return;
+        }
+
+        const section = document.createElement('div');
+        section.className = 'toolbox-result-group';
+
+        const heading = document.createElement('div');
+        heading.className = 'toolbox-result-group-title';
+        const groupTotalSize = groupItems.reduce((acc, item) => acc + item.size_bytes, 0);
+        heading.innerHTML = `
+            <span>${group.label}</span>
+            <span class="toolbox-result-group-size">约 ${formatCleanupTotal(groupTotalSize)}</span>
+        `;
+        section.appendChild(heading);
+
+        groupItems.forEach((item) => {
+            const row = document.createElement('div');
+            row.className = 'toolbox-result-item';
+            row.innerHTML = `
+                <div class="toolbox-result-top">
+                    <span class="toolbox-result-kind" data-tier="${item.tier}">${item.category}</span>
+                    <span class="toolbox-result-priority" data-priority="${item.priority}">${item.priority}优先级</span>
+                </div>
+                <div class="toolbox-result-reason">${item.display_name}</div>
+                <div class="toolbox-result-size">${item.size_label}</div>
+                <div class="toolbox-result-reason">${item.reason_short}</div>
+                <div class="toolbox-result-path">${item.path}</div>
+                <div class="toolbox-result-advice">${item.advice}</div>
+                <div class="toolbox-result-actions">
+                    <button class="toolbox-result-open-btn" type="button">${item.suggested_action === 'clean' ? '打开并准备清理' : item.suggested_action === 'uninstall_app' ? '打开并考虑卸载' : '打开位置'}</button>
+                    <button class="toolbox-result-drill-btn" type="button">查看下一层</button>
+                </div>
+            `;
+            const openButton = row.querySelector<HTMLButtonElement>('.toolbox-result-open-btn');
+            const drillButton = row.querySelector<HTMLButtonElement>('.toolbox-result-drill-btn');
+            openButton?.addEventListener('click', async () => {
+                updateCleanupStatus(`正在打开：${item.path}`);
+                try {
+                    await invoke('open_path_in_explorer', { path: item.path });
+                    updateCleanupStatus('已打开对应位置，你可以先看看里面具体是什么内容。');
+                } catch (error) {
+                    updateCleanupStatus(`打开失败：${String(error)}`);
+                }
+            });
+            if (item.category === '大文件' || item.size_bytes < CLEANUP_DRILLDOWN_MIN_BYTES) {
+                drillButton?.setAttribute('disabled', 'true');
+                if (item.size_bytes < CLEANUP_DRILLDOWN_MIN_BYTES) {
+                    drillButton?.setAttribute('title', '低于 50MB 的内容不再继续下钻');
+                }
+            } else {
+                drillButton?.addEventListener('click', () => {
+                    void drillCleanupPath(item.path);
+                });
+            }
+            section.appendChild(row);
+        });
+
+        container.appendChild(section);
+    });
+}
+
+function clearCleanupResults() {
+    const container = document.getElementById('cleanup-results');
+    if (container) {
+        container.innerHTML = '';
+    }
+    updateCleanupSummary([]);
+}
+
+function setCleanupDeepScanRunning(running: boolean) {
+    const cancelButton = document.getElementById('cleanup-cancel-btn') as HTMLButtonElement | null;
+    const deepScanButton = document.getElementById('cleanup-deep-scan-btn') as HTMLButtonElement | null;
+    const scanButton = document.getElementById('cleanup-scan-btn') as HTMLButtonElement | null;
+    const rescanButton = document.getElementById('cleanup-rescan-btn') as HTMLButtonElement | null;
+    if (cancelButton) {
+        cancelButton.hidden = !running;
+    }
+    if (deepScanButton) {
+        deepScanButton.disabled = running;
+    }
+    if (scanButton) {
+        scanButton.disabled = running;
+    }
+    if (rescanButton) {
+        rescanButton.disabled = running;
+    }
+}
+
+function clearCleanupDeepScanPolling() {
+    if (cleanupDeepScanPollTimer !== null) {
+        window.clearInterval(cleanupDeepScanPollTimer);
+        cleanupDeepScanPollTimer = null;
+    }
+}
+
+async function pollCleanupDeepScanTask() {
+    if (!cleanupDeepScanTaskId) {
+        return;
+    }
+    try {
+        const snapshot = await invoke<CleanupDeepScanTaskSnapshot>('get_cleanup_deep_scan_task', { taskId: cleanupDeepScanTaskId });
+        updateCleanupStatus(snapshot.message || '正在深度分析...');
+        if (snapshot.status === 'completed') {
+            lastCleanupResults = snapshot.results || [];
+            rootCleanupResults = lastCleanupResults;
+            cleanupNavigationStack = [];
+            setCleanupScanState(false);
+            setCleanupDeepScanRunning(false);
+            clearCleanupScanStageTimers();
+            clearCleanupDeepScanPolling();
+            cleanupDeepScanTaskId = null;
+            renderCleanupResults(lastCleanupResults);
+            updateCleanupNavigation();
+            updateCleanupStatus(lastCleanupResults.length > 0 ? buildCleanupRecommendationSummary(lastCleanupResults) : '深度分析完成，但暂时没有发现明显偏大的候选目录。');
+            return;
+        }
+        if (snapshot.status === 'cancelled') {
+            setCleanupScanState(false);
+            setCleanupDeepScanRunning(false);
+            clearCleanupScanStageTimers();
+            clearCleanupDeepScanPolling();
+            cleanupDeepScanTaskId = null;
+            updateCleanupStatus('已取消深度分析。');
+            return;
+        }
+        if (snapshot.status === 'cancelling') {
+            setCleanupScanState(true);
+            setCleanupDeepScanRunning(true);
+            return;
+        }
+        setCleanupScanState(true);
+        setCleanupDeepScanRunning(true);
+    } catch (error) {
+        setCleanupScanState(false);
+        setCleanupDeepScanRunning(false);
+        clearCleanupScanStageTimers();
+        clearCleanupDeepScanPolling();
+        cleanupDeepScanTaskId = null;
+        updateCleanupStatus(`深度分析状态获取失败：${String(error)}`);
+    }
+}
+
+async function startCleanupDeepScan(isRescan = false) {
+    cleanupScanMode = 'deep';
+    cleanupNavigationStack = [];
+    clearCleanupResults();
+    clearCleanupScanStageTimers();
+    clearCleanupDeepScanPolling();
+    setCleanupScanState(true);
+    setCleanupDeepScanRunning(true);
+    updateCleanupStatus(isRescan ? '正在重新启动深度分析任务...' : '正在启动深度分析任务...');
+    try {
+        cleanupDeepScanTaskId = await invoke<string>('start_cleanup_deep_scan_task');
+        cleanupDeepScanPollTimer = window.setInterval(() => {
+            void pollCleanupDeepScanTask();
+        }, 800);
+        await pollCleanupDeepScanTask();
+    } catch (error) {
+        setCleanupScanState(false);
+        setCleanupDeepScanRunning(false);
+        cleanupDeepScanTaskId = null;
+        updateCleanupStatus(`启动深度分析失败：${String(error)}`);
+    }
+}
+
+async function startCleanupScan(mode: 'light' | 'deep' = 'light', isRescan = false) {
+    if (mode === 'deep') {
+        await startCleanupDeepScan(isRescan);
+        return;
+    }
+    const startedAt = Date.now();
+    cleanupScanMode = mode;
+    setCleanupScanState(true);
+    updateCleanupStatus(isRescan
+        ? (mode === 'deep' ? '正在重新深度分析整个 C 盘结构...' : '正在重新分析 C 盘主要目录和重点缓存目录...')
+        : (mode === 'deep' ? '正在准备深度分析整个 C 盘结构...' : '正在准备分析 C 盘主要目录和重点缓存目录...'));
+    renderCleanupResults([]);
+    clearCleanupScanStageTimers();
+    cleanupScanStageTimers.push(window.setTimeout(() => updateCleanupStatus(isRescan
+        ? (mode === 'deep' ? '正在重新全量统计 C 盘目录体积，这会更慢一些...' : '正在重新快速估算主要目录占用，并补充重点清理建议...')
+        : (mode === 'deep' ? '正在全量统计 C 盘目录体积，这会更慢一些...' : '正在快速估算主要目录占用，并补充重点清理建议...')), 600));
+    cleanupScanStageTimers.push(window.setTimeout(() => updateCleanupStatus(isRescan
+        ? (mode === 'deep' ? '深度分析会尽量把 C 盘主要大目录都找出来，再按规则给建议。' : '这次以给清理建议为主，不做全盘深度扫描，所以会更轻量。')
+        : (mode === 'deep' ? '深度分析会尽量把 C 盘主要大目录都找出来，再按规则给建议。' : '这次以给清理建议为主，不做全盘深度扫描，所以会更轻量。')), 1300));
+    try {
+        const results = await invoke<CleanupCandidate[]>(mode === 'deep' ? 'scan_cleanup_full_candidates' : 'scan_cleanup_candidates');
+        const minimumVisibleDurationMs = 1400;
+        const elapsed = Date.now() - startedAt;
+        if (elapsed < minimumVisibleDurationMs) {
+            await new Promise((resolve) => window.setTimeout(resolve, minimumVisibleDurationMs - elapsed));
+        }
+        lastCleanupResults = results || [];
+        rootCleanupResults = lastCleanupResults;
+        cleanupNavigationStack = [];
+        setCleanupScanState(false);
+        clearCleanupScanStageTimers();
+        renderCleanupResults(lastCleanupResults);
+        updateCleanupNavigation();
+        updateCleanupStatus(lastCleanupResults.length > 0
+            ? buildCleanupRecommendationSummary(lastCleanupResults)
+            : (isRescan ? '分析完成，暂时没有发现明显偏大的候选目录。' : '分析完成，暂时没有发现明显偏大的候选目录。'));
+    } catch (error) {
+        setCleanupScanState(false);
+        clearCleanupScanStageTimers();
+        updateCleanupStatus(`${isRescan ? '重新分析' : '分析'}失败：${String(error)}`);
+    }
+}
+
+function openCleanupWindow() {
+    if (!isCleanupStandaloneWindow()) {
+        hideContextMenu();
+        closeToolboxModal();
+        void invoke('show_cleanup_window');
+        void getCurrentWebviewWindow().emitTo('cleanup', 'cleanup-open-requested', null);
+        return;
+    }
+
+    const panel = document.getElementById('cleanup-window');
+    panel?.classList.add('visible');
+    renderCleanupResults(lastCleanupResults);
+    if (lastCleanupResults.length > 0) {
+        updateCleanupStatus('这里保留了上一次分析结果，你也可以重新分析。');
+    } else {
+        updateCleanupStatus('你可以先分析主要占用目录，再决定清缓存、删旧文件还是卸载软件。');
+    }
+    setCleanupFilter('all');
+    updateCleanupNavigation();
+}
+
+function closeCleanupWindow() {
+    setCleanupScanState(false);
+    clearCleanupScanStageTimers();
+
+    if (isCleanupStandaloneWindow()) {
+        void invoke('hide_cleanup_window');
+        return;
+    }
+
+    const panel = document.getElementById('cleanup-window');
+    panel?.classList.remove('visible');
+}
+
+async function initializeStandalonePomodoroWindow() {
+    document.body.dataset.windowLabel = 'pomodoro';
+    const panel = document.getElementById('pomodoro-window');
+    if (panel) {
+        panel.classList.add('visible');
+    }
+
+    updatePomodoroPanel();
+
+    await getCurrentWebviewWindow().listen('pomodoro-open-requested', async () => {
+        openPomodoroWindow();
+        await getCurrentWindow().show();
+        await getCurrentWindow().setFocus();
+    });
+
+    bindStandaloneWindowDrag('.settings-header', '#pomodoro-window');
+}
+
+function bindElementClickOnce(selector: string, handler: () => void | Promise<void>) {
+    const element = document.querySelector<HTMLElement>(selector);
+    if (!element || element.dataset.boundClick === 'true') {
+        return;
+    }
+    element.dataset.boundClick = 'true';
+    element.addEventListener('click', () => {
+        void handler();
+    });
+}
+
+function bindPomodoroControls() {
+    bindElementClickOnce('#pomodoro-toggle-btn', async () => {
+        if (pomodoroRunning) {
+            stopPomodoroTimer();
+            updatePomodoroPanel();
+            return;
+        }
+        startPomodoroTimer();
+    });
+    bindElementClickOnce('#pomodoro-reset-btn', async () => {
+        resetPomodoroTimer();
+    });
+    bindElementClickOnce('.pomodoro-close-btn', async () => {
+        closePomodoroWindow();
+    });
+}
+
+function bindCleanupControls() {
+    bindElementClickOnce('#cleanup-scan-btn', async () => {
+        await startCleanupScan('light', false);
+    });
+    bindElementClickOnce('#cleanup-rescan-btn', async () => {
+        await startCleanupScan(cleanupScanMode, true);
+    });
+    bindElementClickOnce('#cleanup-deep-scan-btn', async () => {
+        await startCleanupScan('deep', false);
+    });
+    bindElementClickOnce('#cleanup-cancel-btn', async () => {
+        if (!cleanupDeepScanTaskId) {
+            return;
+        }
+        try {
+            await invoke('cancel_cleanup_deep_scan_task', { taskId: cleanupDeepScanTaskId });
+            updateCleanupStatus('正在取消深度分析...');
+        } catch (error) {
+            updateCleanupStatus(`取消失败：${String(error)}`);
+        }
+    });
+    bindElementClickOnce('#cleanup-filter-all', async () => {
+        setCleanupFilter('all');
+    });
+    bindElementClickOnce('#cleanup-filter-high', async () => {
+        setCleanupFilter('high');
+    });
+    bindElementClickOnce('#cleanup-back-btn', async () => {
+        goBackCleanupLevel();
+    });
+    bindElementClickOnce('#cleanup-storage-btn', async () => {
+        updateCleanupStatus('正在打开系统存储设置...');
+        try {
+            await invoke('open_windows_storage_settings');
+            updateCleanupStatus('已打开系统存储设置，你可以先看大文件和临时文件占用。');
+        } catch (error) {
+            updateCleanupStatus(`打开失败：${String(error)}`);
+        }
+    });
+    bindElementClickOnce('.cleanup-scan-close-btn', async () => {
+        closeCleanupWindow();
+    });
+}
+
+function openToolboxModal() {
+    hideContextMenu();
+    const modal = document.getElementById('toolbox-modal');
+    modal?.classList.add('visible');
+}
+
+function closeToolboxModal() {
+    const modal = document.getElementById('toolbox-modal');
+    modal?.classList.remove('visible');
+}
+
+function handleToolboxAction(tool: string) {
+    if (tool == 'cleanup-c-drive') {
+        openCleanupWindow();
+        return;
+    }
+
+    if (tool == 'pomodoro-timer') {
+        openPomodoroWindow();
+    }
+}
+
+function bindToolboxModal() {
+    const modal = document.getElementById('toolbox-modal');
+    if (!modal) return;
+
+    const closeButton = modal.querySelector<HTMLElement>('.toolbox-close-btn');
+    closeButton?.addEventListener('click', closeToolboxModal);
+
+    modal.addEventListener('click', (event) => {
+        if (event.target === modal) {
+            closeToolboxModal();
+        }
+    });
+
+    modal.querySelectorAll<HTMLElement>('[data-tool]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const tool = button.dataset.tool || '';
+            handleToolboxAction(tool);
+        });
+    });
+
+    bindPomodoroControls();
+    bindCleanupControls();
+    updatePomodoroPanel();
 }
 
 function quitApp() {
@@ -4453,6 +5832,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     }
     await hydrateFrontendMemories();
     await hydrateFrontendHistory();
+    await syncDerivedCompanionDocs();
 
     if (isChatStandaloneWindow()) {
         const closeBtn = document.querySelector('.close-btn');
@@ -4507,7 +5887,20 @@ window.addEventListener('DOMContentLoaded', async () => {
         return;
     }
 
+    if (isCleanupStandaloneWindow()) {
+        bindCleanupControls();
+        await initializeStandaloneCleanupWindow();
+        return;
+    }
+
+    if (isPomodoroStandaloneWindow()) {
+        bindPomodoroControls();
+        await initializeStandalonePomodoroWindow();
+        return;
+    }
+
     bindContextMenuActions();
+    bindToolboxModal();
     bindCharacterInteractions();
     bindFirstRunCreator();
     startProactiveLoop();
