@@ -26,7 +26,7 @@ STREAM_LLM_TIMEOUT = 300
 TTS_PROXY_TIMEOUT = 30
 DEFAULT_TTS_SERVER_BASE_URL = os.getenv("DESKTOP_AI_COMPANION_TTS_SERVER_URL", "").strip()
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -45,13 +45,50 @@ from app.config import (
     set_data_dir,
 )
 from app.db import (
+    clear_messages,
     create_companion,
     create_imported_model,
     get_active_companion,
+    get_messages,
     list_imported_models,
     list_companions,
+    save_message,
     set_active_companion,
     update_companion,
+)
+from backend.auth_utils import (
+    REFRESH_TOKEN_TTL_SECONDS,
+    generate_refresh_token,
+    hash_refresh_token,
+    hash_sms_code,
+    sign_access_token,
+    verify_access_token,
+)
+from backend.business_store import (
+    create_payment_order,
+    create_sms_code,
+    create_user_session,
+    delete_session_by_refresh_token_hash,
+    get_or_create_user_by_phone,
+    get_payment_order,
+    get_plan,
+    get_session_by_refresh_token_hash,
+    get_user_by_id,
+    get_user_membership,
+    init_business_tables,
+    list_membership_plans,
+    mark_order_paid,
+    mysql_is_configured,
+    now_utc,
+    store_payment_callback,
+    consume_sms_code,
+    update_payment_order_provider_fields,
+)
+from backend.provider_services import (
+    create_wechat_native_payment,
+    generate_sms_code,
+    parse_wechat_payment_notification,
+    send_login_sms,
 )
 
 MODEL_CATALOG = [
@@ -384,6 +421,93 @@ class ConfigUpdate(BaseModel):
         return value
 
 
+class SmsSendRequest(BaseModel):
+    phone: str
+    scene: str = "login"
+
+
+class SmsSendResponse(BaseModel):
+    status: str
+    provider: str
+    cooldown_seconds: int = 60
+    debug_code: str | None = None
+
+
+class SmsLoginRequest(BaseModel):
+    phone: str
+    code: str
+    device_id: str | None = None
+    device_name: str | None = None
+    scene: str = "login"
+
+
+class RefreshTokenRequest(BaseModel):
+    refresh_token: str
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: str
+
+
+class MembershipResponse(BaseModel):
+    plan_code: str
+    tier: str
+    status: str
+    started_at: datetime | None = None
+    expires_at: datetime | None = None
+    benefits: dict[str, object] = Field(default_factory=dict)
+
+
+class UserResponse(BaseModel):
+    id: int
+    phone: str
+    nickname: str | None = None
+    avatar_url: str | None = None
+    status: str
+
+
+class AuthSessionResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    user: UserResponse
+    membership: MembershipResponse
+
+
+class MeResponse(BaseModel):
+    user: UserResponse
+    membership: MembershipResponse
+
+
+class MembershipPlanResponse(BaseModel):
+    plan_code: str
+    plan_name: str
+    price_fen: int
+    duration_days: int
+    tier: str
+    benefits: dict[str, object] = Field(default_factory=dict)
+
+
+class CreateWechatOrderRequest(BaseModel):
+    plan_code: str
+
+
+class PaymentOrderResponse(BaseModel):
+    order_no: str
+    plan_code: str
+    amount_fen: int
+    status: str
+    pay_channel: str
+    code_url: str | None = None
+    paid_at: datetime | None = None
+
+
+class WechatNotifyRequest(BaseModel):
+    order_no: str
+    transaction_id: str | None = None
+    status: str = "SUCCESS"
+
+
 def apply_active_companion(current: AppConfig) -> AppConfig:
     active_companion = get_active_companion()
     config_data = current.__dict__.copy()
@@ -397,6 +521,7 @@ def apply_active_companion(current: AppConfig) -> AppConfig:
 
 def to_api_config(current: AppConfig) -> Config:
     config_data = apply_active_companion(current).__dict__.copy()
+    config_data["api_key"] = ""
     return Config.model_validate(config_data)
 
 
@@ -409,6 +534,76 @@ def resolve_llm_settings(config: AppConfig) -> tuple[str, str, str]:
 
 def is_vip_user() -> bool:
     return False
+
+
+def search_web(query: str) -> str:
+    raise NotImplementedError("search_web is not implemented")
+
+
+def ensure_business_ready() -> None:
+    if not mysql_is_configured():
+        raise HTTPException(status_code=503, detail="Business MySQL is not configured")
+
+
+def validate_phone_number(phone: str) -> str:
+    normalized = re.sub(r"\s+", "", phone)
+    if not re.fullmatch(r"1\d{10}", normalized):
+        raise HTTPException(status_code=400, detail="Invalid phone number")
+    return normalized
+
+
+def build_user_response(user: dict) -> UserResponse:
+    return UserResponse(
+        id=int(user["id"]),
+        phone=str(user["phone"]),
+        nickname=user.get("nickname"),
+        avatar_url=user.get("avatar_url"),
+        status=str(user.get("status") or "active"),
+    )
+
+
+def build_membership_response(membership: dict) -> MembershipResponse:
+    return MembershipResponse(
+        plan_code=membership["plan_code"],
+        tier=membership["tier"],
+        status=membership["status"],
+        started_at=membership.get("started_at"),
+        expires_at=membership.get("expires_at"),
+        benefits=membership.get("benefits") or {},
+    )
+
+
+def issue_auth_session(user: dict, device_id: str | None, device_name: str | None) -> AuthSessionResponse:
+    access_token = sign_access_token(int(user["id"]), str(user["phone"]))
+    refresh_token = generate_refresh_token()
+    create_user_session(
+        user_id=int(user["id"]),
+        refresh_token_hash=hash_refresh_token(refresh_token),
+        device_id=device_id,
+        device_name=device_name,
+        expires_at=now_utc().fromtimestamp(now_utc().timestamp() + REFRESH_TOKEN_TTL_SECONDS),
+    )
+    membership = get_user_membership(int(user["id"]))
+    return AuthSessionResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        user=build_user_response(user),
+        membership=build_membership_response(membership),
+    )
+
+
+def get_current_user(authorization: str | None) -> dict:
+    ensure_business_ready()
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="Missing bearer token")
+    token = authorization.split(" ", 1)[1].strip()
+    payload = verify_access_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid access token")
+    user = get_user_by_id(int(payload["uid"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return user
 
 
 def needs_live_search(message: str) -> bool:
@@ -1017,12 +1212,167 @@ app.mount("/live2d", StaticFiles(directory=BUILTIN_LIVE2D_DIR), name="builtin-li
 app.mount("/model-previews/builtin", StaticFiles(directory=BUILTIN_PREVIEW_DIR), name="builtin-previews")
 app.mount("/desktop-ai-companion", StaticFiles(directory=PUBLIC_RELEASE_DIR), name="desktop-ai-companion-public")
 
+
+@app.on_event("startup")
+async def init_business_module():
+    init_business_tables()
+
 # ============== API 端点 ==============
 
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "ok", "version": "0.1.0"}
+    return {"status": "ok", "version": "0.1.0", "mysql_business_configured": mysql_is_configured()}
+
+
+@app.post("/auth/sms/send", response_model=SmsSendResponse)
+async def send_sms_code_endpoint(payload: SmsSendRequest, request: Request):
+    ensure_business_ready()
+    phone = validate_phone_number(payload.phone)
+    code = generate_sms_code()
+    code_hash = hash_sms_code(phone, payload.scene, code)
+    expires_at = now_utc().fromtimestamp(now_utc().timestamp() + 5 * 60)
+    try:
+        provider_result = send_login_sms(phone, code)
+        create_sms_code(phone, payload.scene, code_hash, expires_at, request.client.host if request.client else None)
+    except ValueError as error:
+        raise HTTPException(status_code=429, detail=str(error)) from error
+    except NotImplementedError as error:
+        raise HTTPException(status_code=501, detail=str(error)) from error
+
+    return SmsSendResponse(
+        status="ok",
+        provider=str(provider_result.get("provider", "unknown")),
+        debug_code=provider_result.get("debug_code"),
+    )
+
+
+@app.post("/auth/sms/login", response_model=AuthSessionResponse)
+async def sms_login_endpoint(payload: SmsLoginRequest):
+    ensure_business_ready()
+    phone = validate_phone_number(payload.phone)
+    code_hash = hash_sms_code(phone, payload.scene, payload.code.strip())
+    if not consume_sms_code(phone, payload.scene, code_hash):
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
+
+    user = get_or_create_user_by_phone(phone)
+    return issue_auth_session(user, payload.device_id, payload.device_name)
+
+
+@app.post("/auth/refresh", response_model=AuthSessionResponse)
+async def refresh_token_endpoint(payload: RefreshTokenRequest):
+    ensure_business_ready()
+    session = get_session_by_refresh_token_hash(hash_refresh_token(payload.refresh_token))
+    if not session:
+        raise HTTPException(status_code=401, detail="Invalid refresh token")
+    delete_session_by_refresh_token_hash(hash_refresh_token(payload.refresh_token))
+    user = get_user_by_id(int(session["user_id"]))
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    return issue_auth_session(user, session.get("device_id"), session.get("device_name"))
+
+
+@app.post("/auth/logout")
+async def logout_endpoint(payload: LogoutRequest):
+    ensure_business_ready()
+    delete_session_by_refresh_token_hash(hash_refresh_token(payload.refresh_token))
+    return {"status": "ok"}
+
+
+@app.get("/me", response_model=MeResponse)
+async def me_endpoint(authorization: str | None = Header(default=None)):
+    user = get_current_user(authorization)
+    membership = get_user_membership(int(user["id"]))
+    return MeResponse(user=build_user_response(user), membership=build_membership_response(membership))
+
+
+@app.get("/billing/plans", response_model=list[MembershipPlanResponse])
+async def get_membership_plans_endpoint():
+    ensure_business_ready()
+    plans = list_membership_plans()
+    return [MembershipPlanResponse(**plan) for plan in plans if plan["plan_code"] != "free"]
+
+
+@app.post("/billing/orders/wechat-native", response_model=PaymentOrderResponse)
+async def create_wechat_native_order_endpoint(payload: CreateWechatOrderRequest, authorization: str | None = Header(default=None)):
+    user = get_current_user(authorization)
+    plan = get_plan(payload.plan_code)
+    if not plan or payload.plan_code == "free":
+        raise HTTPException(status_code=400, detail="Invalid plan code")
+
+    order = create_payment_order(
+        user_id=int(user["id"]),
+        plan_code=payload.plan_code,
+        pay_channel="wechat_native",
+    )
+
+    try:
+        payment = create_wechat_native_payment(
+            order_no=order["order_no"],
+            amount_fen=int(plan["price_fen"]),
+            description=plan["plan_name"],
+        )
+    except NotImplementedError as error:
+        raise HTTPException(status_code=501, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"Create WeChat payment failed: {error}") from error
+
+    order = update_payment_order_provider_fields(
+        order_no=order["order_no"],
+        wechat_code_url=payment.get("code_url"),
+        wechat_prepay_id=payment.get("prepay_id"),
+    ) or order
+    return PaymentOrderResponse(
+        order_no=order["order_no"],
+        plan_code=order["plan_code"],
+        amount_fen=int(order["amount_fen"]),
+        status=order["status"],
+        pay_channel=order["pay_channel"],
+        code_url=order.get("wechat_code_url"),
+        paid_at=order.get("paid_at"),
+    )
+
+
+@app.get("/billing/orders/{order_no}", response_model=PaymentOrderResponse)
+async def get_order_status_endpoint(order_no: str, authorization: str | None = Header(default=None)):
+    user = get_current_user(authorization)
+    order = get_payment_order(order_no)
+    if not order or int(order["user_id"]) != int(user["id"]):
+        raise HTTPException(status_code=404, detail="Order not found")
+    return PaymentOrderResponse(
+        order_no=order["order_no"],
+        plan_code=order["plan_code"],
+        amount_fen=int(order["amount_fen"]),
+        status=order["status"],
+        pay_channel=order["pay_channel"],
+        code_url=order.get("wechat_code_url"),
+        paid_at=order.get("paid_at"),
+    )
+
+
+@app.post("/payments/wechat/notify")
+async def wechat_notify_endpoint(request: Request):
+    ensure_business_ready()
+    body = (await request.body()).decode("utf-8")
+    headers = {key: value for key, value in request.headers.items()}
+    try:
+        callback = parse_wechat_payment_notification(headers, body)
+    except NotImplementedError as error:
+        raise HTTPException(status_code=501, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=400, detail=f"Invalid WeChat callback: {error}") from error
+
+    store_payment_callback(
+        provider="wechat",
+        event_type=str(callback.get("status") or "UNKNOWN"),
+        payload=callback,
+    )
+    if str(callback.get("status") or "").upper() not in {"SUCCESS", "TRANSACTION.SUCCESS"}:
+        return {"status": "ignored"}
+    order = mark_order_paid(str(callback["order_no"]), callback.get("transaction_id"))
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return {"code": "SUCCESS", "message": "成功"}
 
 
 @app.get("/proactive/weather", response_model=ProactiveMessageResponse)
@@ -1032,7 +1382,7 @@ async def proactive_weather(location: str = "合肥"):
 
 @app.get("/proactive/followup", response_model=ProactiveMessageResponse)
 async def proactive_followup():
-    return ProactiveMessageResponse(trigger="care_followup", content="")
+    return ProactiveMessageResponse(trigger="care_followup", content=build_care_followup_line() or "")
 
 
 @app.get("/data-dir", response_model=DataDirResponse)
@@ -1065,12 +1415,27 @@ async def chat(request: ChatRequest):
 
     try:
         response_content = resolve_live_response(request.message, request.context, current)
+        save_message("user", request.message)
+        save_message("assistant", response_content)
         return ChatResponse(content=response_content)
     except Exception:
         pass
 
     response_content = build_assistant_reply(request.message, request.context, current)
+    save_message("user", request.message)
+    save_message("assistant", response_content)
     return ChatResponse(content=response_content)
+
+
+@app.get("/history")
+async def get_history_endpoint(limit: int = 50):
+    return get_messages(limit=limit)
+
+
+@app.delete("/history")
+async def clear_history_endpoint():
+    clear_messages()
+    return {"status": "ok"}
 
 
 @app.post("/speech/synthesize", response_model=SpeechSynthesizeResponse)
@@ -1124,7 +1489,7 @@ async def chat_stream(request: ChatRequest):
         media_type="text/event-stream",
     )
 
-@app.get("/config", response_model=Config)
+@app.get("/config", response_model=Config, response_model_exclude={"api_key"})
 async def get_config_endpoint():
     """获取配置"""
     return to_api_config(get_config())
