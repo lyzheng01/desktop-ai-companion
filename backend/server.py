@@ -25,6 +25,7 @@ NON_STREAM_LLM_TIMEOUT = 180
 STREAM_LLM_TIMEOUT = 300
 TTS_PROXY_TIMEOUT = 30
 DEFAULT_TTS_SERVER_BASE_URL = os.getenv("DESKTOP_AI_COMPANION_TTS_SERVER_URL", "").strip()
+SOUL_PROMPT_PATH = PROJECT_ROOT / "soul.md"
 
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -45,6 +46,8 @@ from app.config import (
     set_data_dir,
 )
 from app.db import (
+    LEGACY_COMPANION_ID,
+    LEGACY_USER_ID,
     clear_messages,
     create_companion,
     create_imported_model,
@@ -90,6 +93,9 @@ from backend.provider_services import (
     parse_wechat_payment_notification,
     send_login_sms,
 )
+from backend.chat_service import build_chat_response_payload, build_stream_final_meta
+from backend.memory_service import build_memory_context_message
+from backend.profile_service import build_profile_context_messages
 
 MODEL_CATALOG = [
     {
@@ -289,9 +295,16 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     context: List[ChatMessage] = Field(default_factory=list)
+    companion_id: int | None = None
 
 class ChatResponse(BaseModel):
     content: str
+    text: str
+    emotion: str = "calm"
+    context: str = "general"
+    animation_hint: str = "talk_soft"
+    should_speak: bool = True
+    audio_url: str | None = None
 
 
 class SpeechSynthesizeRequest(BaseModel):
@@ -508,8 +521,8 @@ class WechatNotifyRequest(BaseModel):
     status: str = "SUCCESS"
 
 
-def apply_active_companion(current: AppConfig) -> AppConfig:
-    active_companion = get_active_companion()
+def apply_active_companion(current: AppConfig, user_id: int = LEGACY_USER_ID) -> AppConfig:
+    active_companion = ensure_active_companion_for_user(user_id, current)
     config_data = current.__dict__.copy()
     if active_companion is not None:
         config_data["character_name"] = active_companion["name"]
@@ -519,8 +532,8 @@ def apply_active_companion(current: AppConfig) -> AppConfig:
     return AppConfig(**config_data)
 
 
-def to_api_config(current: AppConfig) -> Config:
-    config_data = apply_active_companion(current).__dict__.copy()
+def to_api_config(current: AppConfig, user_id: int = LEGACY_USER_ID) -> Config:
+    config_data = apply_active_companion(current, user_id=user_id).__dict__.copy()
     config_data["api_key"] = ""
     return Config.model_validate(config_data)
 
@@ -604,6 +617,57 @@ def get_current_user(authorization: str | None) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
+
+
+def get_optional_current_user(authorization: str | None) -> dict | None:
+    if not authorization:
+        return None
+    return get_current_user(authorization)
+
+
+def get_request_user_id(authorization: str | None) -> int:
+    user = get_optional_current_user(authorization)
+    return int(user["id"]) if user else LEGACY_USER_ID
+
+
+def ensure_active_companion_for_user(user_id: int, current: AppConfig | None = None) -> dict | None:
+    active = get_active_companion(user_id=user_id)
+    if active is not None:
+        return active
+
+    current = current or get_config()
+    if user_id != LEGACY_USER_ID:
+        return None
+
+    companions = list_companions(user_id=user_id)
+    if companions:
+        first_id = int(companions[0]["id"])
+        set_active_companion(first_id, user_id=user_id)
+        return get_active_companion(user_id=user_id)
+
+    companion_id = create_companion(
+        name=current.character_name.strip() or "Mao",
+        character_type=current.character_type.strip() or "mao_pro_zh",
+        personality_tags=current.personality or ["温柔"],
+        interaction_mode=current.interaction_mode or "work",
+        is_active=True,
+        user_id=user_id,
+    )
+    return get_active_companion(user_id=user_id)
+
+
+def resolve_companion_id_for_user(user_id: int, companion_id: int | None = None) -> int:
+    if companion_id is not None:
+        companion = next((item for item in list_companions(user_id=user_id) if int(item["id"]) == int(companion_id)), None)
+        if companion is None:
+            raise HTTPException(status_code=404, detail="Companion not found for user")
+        return int(companion_id)
+
+    active = ensure_active_companion_for_user(user_id)
+    if active is not None:
+        return int(active["id"])
+
+    return LEGACY_COMPANION_ID
 
 
 def needs_live_search(message: str) -> bool:
@@ -942,6 +1006,14 @@ def build_assistant_reply(
 
 
 def build_companion_system_prompt(config: AppConfig) -> str:
+    if SOUL_PROMPT_PATH.exists():
+        try:
+            soul_text = SOUL_PROMPT_PATH.read_text(encoding="utf-8").strip()
+            if soul_text:
+                return soul_text
+        except OSError:
+            pass
+
     companion_name = config.character_name.strip() or "小艾"
     user_name = config.user_display_name.strip() or config.user_nickname.strip() or "你"
     personality = "、".join(config.personality[:4]) if config.personality else "温柔"
@@ -958,12 +1030,94 @@ def build_companion_system_prompt(config: AppConfig) -> str:
     )
 
 
-def build_chat_messages(config: AppConfig, message: str, context: list[ChatMessage], search_context_block: str | None = None) -> list[dict]:
+def extract_memory_candidates(message: str) -> list[dict[str, str | bool]]:
+    normalized = (message or "").strip()
+    candidates: list[dict[str, str | bool]] = []
+
+    explicit_remember_match = re.search(r"(?:记住|记一下|帮我记住|你要记得|以后别忘了|请记得)(.+)$", normalized)
+    if explicit_remember_match and explicit_remember_match.group(1):
+        candidates.append(
+            {
+                "content": explicit_remember_match.group(1).strip(),
+                "scope": "long_term",
+                "category": "preference",
+                "explicit": True,
+            }
+        )
+
+    if "我喜欢" in normalized or "我不喜欢" in normalized:
+        candidates.append(
+            {
+                "content": normalized,
+                "scope": "preference",
+                "category": "taste",
+                "explicit": False,
+            }
+        )
+
+    if any(token in normalized for token in ["简短一点", "说短一点", "别太长", "不要太长", "详细一点", "说具体一点", "别太官方", "自然一点"]):
+        candidates.append(
+            {
+                "content": normalized,
+                "scope": "preference",
+                "category": "reply_style",
+                "explicit": False,
+            }
+        )
+
+    if any(token in normalized for token in ["最近在做", "最近在准备", "这周在做", "最近在忙", "这阵子在搞"]):
+        candidates.append(
+            {
+                "content": normalized,
+                "scope": "short_term",
+                "category": "current_project",
+                "explicit": False,
+            }
+        )
+
+    if any(token in normalized for token in ["最近有点累", "这几天有点累", "最近压力有点大", "这周有点忙"]):
+        candidates.append(
+            {
+                "content": normalized,
+                "scope": "short_term",
+                "category": "current_focus",
+                "explicit": False,
+            }
+        )
+
+    if re.search(r"叫我(.+?)(就好|即可|就行|吧|。|！|!|$)", normalized):
+        candidates.append(
+            {
+                "content": normalized,
+                "scope": "preference",
+                "category": "name_preference",
+                "explicit": False,
+            }
+        )
+
+    return candidates
+
+
+def build_chat_messages(
+    config: AppConfig,
+    message: str,
+    context: list[ChatMessage],
+    user_id: int = LEGACY_USER_ID,
+    companion_id: int = LEGACY_COMPANION_ID,
+    search_context_block: str | None = None,
+) -> list[dict]:
+    system_parts = [build_companion_system_prompt(config)]
+    memory_context = build_memory_context_message(user_id, companion_id)
+    if memory_context:
+        system_parts.append(memory_context)
+    system_parts.extend(build_profile_context_messages(config, user_id, companion_id))
+    if search_context_block:
+        system_parts.append(search_context_block)
+
     return [
         {
             "role": "system",
-            "content": build_companion_system_prompt(config)
-            + (f"\n\n{search_context_block}" if search_context_block else ""),
+            "content": "\n\n".join(system_parts),
         },
         *[
             {"role": item.role, "content": item.content}
@@ -1040,13 +1194,13 @@ def iter_upstream_sse_lines(response: httpx.Response):
             yield delta
 
 
-def generate_native_live_response(message: str, context: list[ChatMessage], config: AppConfig) -> str | None:
+def generate_native_live_response(message: str, context: list[ChatMessage], config: AppConfig, user_id: int = LEGACY_USER_ID, companion_id: int = LEGACY_COMPANION_ID) -> str | None:
     api_key, base_url, model = resolve_llm_settings(config)
 
     if not api_key:
         return None
 
-    input_items = build_chat_messages(config, message, context)
+    input_items = build_chat_messages(config, message, context, user_id=user_id, companion_id=companion_id)
 
     payload = {
         "model": model,
@@ -1072,7 +1226,7 @@ def generate_native_live_response(message: str, context: list[ChatMessage], conf
     return None
 
 
-def iter_native_live_response_stream(message: str, context: list[ChatMessage], config: AppConfig):
+def iter_native_live_response_stream(message: str, context: list[ChatMessage], config: AppConfig, user_id: int = LEGACY_USER_ID, companion_id: int = LEGACY_COMPANION_ID):
     api_key, base_url, model = resolve_llm_settings(config)
 
     if not api_key:
@@ -1080,7 +1234,7 @@ def iter_native_live_response_stream(message: str, context: list[ChatMessage], c
 
     payload = {
         "model": model,
-        "input": build_chat_messages(config, message, context),
+        "input": build_chat_messages(config, message, context, user_id=user_id, companion_id=companion_id),
         "tools": [{"type": "web_search_preview"}],
         "stream": True,
     }
@@ -1096,7 +1250,7 @@ def iter_native_live_response_stream(message: str, context: list[ChatMessage], c
         yield from iter_upstream_sse_lines(response)
 
 
-def iter_chat_response_stream(message: str, context: list[ChatMessage], config: AppConfig, search_context_block: str | None = None):
+def iter_chat_response_stream(message: str, context: list[ChatMessage], config: AppConfig, user_id: int = LEGACY_USER_ID, companion_id: int = LEGACY_COMPANION_ID, search_context_block: str | None = None):
     api_key, base_url, model = resolve_llm_settings(config)
 
     if not api_key:
@@ -1104,7 +1258,7 @@ def iter_chat_response_stream(message: str, context: list[ChatMessage], config: 
 
     payload = {
         "model": model,
-        "messages": build_chat_messages(config, message, context, search_context_block=search_context_block),
+        "messages": build_chat_messages(config, message, context, user_id=user_id, companion_id=companion_id, search_context_block=search_context_block),
         "temperature": 0.8,
         "stream": True,
     }
@@ -1120,20 +1274,20 @@ def iter_chat_response_stream(message: str, context: list[ChatMessage], config: 
         yield from iter_upstream_sse_lines(response)
 
 
-def resolve_live_response(message: str, context: list[ChatMessage], config: AppConfig) -> str:
-    native_live_response = generate_native_live_response(message, context, config)
+def resolve_live_response(message: str, context: list[ChatMessage], config: AppConfig, user_id: int = LEGACY_USER_ID, companion_id: int = LEGACY_COMPANION_ID) -> str:
+    native_live_response = generate_native_live_response(message, context, config, user_id=user_id, companion_id=companion_id)
     if native_live_response:
         return native_live_response
     raise ValueError("Native live response unavailable")
 
 
-def stream_native_live_response(message: str, context: list[ChatMessage], config: AppConfig):
+def stream_native_live_response(message: str, context: list[ChatMessage], config: AppConfig, user_id: int = LEGACY_USER_ID, companion_id: int = LEGACY_COMPANION_ID):
     collected: list[str] = []
     yielded_any = False
     yield sse_event("state", "thinking")
     yield sse_event("phase", "searching")
 
-    for delta in iter_native_live_response_stream(message, context, config) or []:
+    for delta in iter_native_live_response_stream(message, context, config, user_id=user_id, companion_id=companion_id) or []:
         if not yielded_any:
             yield sse_event("phase", "composing")
             yielded_any = True
@@ -1145,16 +1299,17 @@ def stream_native_live_response(message: str, context: list[ChatMessage], config
         raise ValueError("No streamed live response received")
 
     final_reply = shape_companion_reply(message, final_text, config)
+    yield sse_event("final_meta", json.dumps(build_stream_final_meta(message, final_reply, config), ensure_ascii=False))
     yield sse_event("done", "done")
 
 
-def stream_chat_response(message: str, context: list[ChatMessage], config: AppConfig):
+def stream_chat_response(message: str, context: list[ChatMessage], config: AppConfig, user_id: int = LEGACY_USER_ID, companion_id: int = LEGACY_COMPANION_ID):
     collected: list[str] = []
     yielded_any = False
     yield sse_event("state", "thinking")
     yield sse_event("phase", "composing")
 
-    for delta in iter_chat_response_stream(message, context, config) or []:
+    for delta in iter_chat_response_stream(message, context, config, user_id=user_id, companion_id=companion_id) or []:
         yielded_any = True
         collected.append(delta)
         yield sse_event("assistant_delta", delta)
@@ -1164,25 +1319,27 @@ def stream_chat_response(message: str, context: list[ChatMessage], config: AppCo
         raise ValueError("No streamed chat response received")
 
     final_reply = shape_companion_reply(message, final_text, config)
+    yield sse_event("final_meta", json.dumps(build_stream_final_meta(message, final_reply, config), ensure_ascii=False))
     yield sse_event("done", "done")
 
 
-def safe_stream_chat_response(message: str, context: list[ChatMessage], config: AppConfig):
+def safe_stream_chat_response(message: str, context: list[ChatMessage], config: AppConfig, user_id: int = LEGACY_USER_ID, companion_id: int = LEGACY_COMPANION_ID):
     try:
-        yield from stream_chat_response(message, context, config)
+        yield from stream_chat_response(message, context, config, user_id=user_id, companion_id=companion_id)
         return
     except Exception:
         response_content = build_assistant_reply(message, context, config)
         yield sse_event("assistant_delta", response_content)
+        yield sse_event("final_meta", json.dumps(build_stream_final_meta(message, response_content, config), ensure_ascii=False))
         yield sse_event("done", "done")
 
 
-def safe_stream_native_live_response(message: str, context: list[ChatMessage], config: AppConfig):
+def safe_stream_native_live_response(message: str, context: list[ChatMessage], config: AppConfig, user_id: int = LEGACY_USER_ID, companion_id: int = LEGACY_COMPANION_ID):
     try:
-        yield from stream_native_live_response(message, context, config)
+        yield from stream_native_live_response(message, context, config, user_id=user_id, companion_id=companion_id)
         return
     except Exception:
-        yield from safe_stream_chat_response(message, context, config)
+        yield from safe_stream_chat_response(message, context, config, user_id=user_id, companion_id=companion_id)
 
 # ============== FastAPI 应用 ==============
 
@@ -1405,36 +1562,42 @@ async def set_data_dir_endpoint(payload: DataDirUpdateRequest):
     return DataDirResponse(data_dir=str(resolved))
 
 @app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, authorization: str | None = Header(default=None)):
     """
     AI 对话接口
     - message: 用户消息
     - context: 历史消息 (最近 10 条)
     """
-    current = apply_active_companion(get_config())
+    user_id = get_request_user_id(authorization)
+    companion_id = resolve_companion_id_for_user(user_id, request.companion_id)
+    current = apply_active_companion(get_config(), user_id=user_id)
 
     try:
-        response_content = resolve_live_response(request.message, request.context, current)
-        save_message("user", request.message)
-        save_message("assistant", response_content)
-        return ChatResponse(content=response_content)
+        response_content = resolve_live_response(request.message, request.context, current, user_id=user_id, companion_id=companion_id)
+        save_message("user", request.message, user_id=user_id, companion_id=companion_id)
+        save_message("assistant", response_content, user_id=user_id, companion_id=companion_id)
+        return ChatResponse(**build_chat_response_payload(request.message, response_content, current))
     except Exception:
         pass
 
     response_content = build_assistant_reply(request.message, request.context, current)
-    save_message("user", request.message)
-    save_message("assistant", response_content)
-    return ChatResponse(content=response_content)
+    save_message("user", request.message, user_id=user_id, companion_id=companion_id)
+    save_message("assistant", response_content, user_id=user_id, companion_id=companion_id)
+    return ChatResponse(**build_chat_response_payload(request.message, response_content, current))
 
 
 @app.get("/history")
-async def get_history_endpoint(limit: int = 50):
-    return get_messages(limit=limit)
+async def get_history_endpoint(limit: int = 50, companion_id: int | None = None, authorization: str | None = Header(default=None)):
+    user_id = get_request_user_id(authorization)
+    resolved_companion_id = resolve_companion_id_for_user(user_id, companion_id)
+    return get_messages(limit=limit, user_id=user_id, companion_id=resolved_companion_id)
 
 
 @app.delete("/history")
-async def clear_history_endpoint():
-    clear_messages()
+async def clear_history_endpoint(companion_id: int | None = None, authorization: str | None = Header(default=None)):
+    user_id = get_request_user_id(authorization)
+    resolved_companion_id = resolve_companion_id_for_user(user_id, companion_id)
+    clear_messages(user_id=user_id, companion_id=resolved_companion_id)
     return {"status": "ok"}
 
 
@@ -1482,32 +1645,38 @@ async def synthesize_speech(payload: SpeechSynthesizeRequest):
 
 
 @app.post("/chat/stream")
-async def chat_stream(request: ChatRequest):
-    current = apply_active_companion(get_config())
+async def chat_stream(request: ChatRequest, authorization: str | None = Header(default=None)):
+    user_id = get_request_user_id(authorization)
+    companion_id = resolve_companion_id_for_user(user_id, request.companion_id)
+    current = apply_active_companion(get_config(), user_id=user_id)
     return StreamingResponse(
-        safe_stream_native_live_response(request.message, request.context, current),
+        safe_stream_native_live_response(request.message, request.context, current, user_id=user_id, companion_id=companion_id),
         media_type="text/event-stream",
     )
 
 @app.get("/config", response_model=Config, response_model_exclude={"api_key"})
-async def get_config_endpoint():
+async def get_config_endpoint(authorization: str | None = Header(default=None)):
     """获取配置"""
-    return to_api_config(get_config())
+    user_id = get_request_user_id(authorization)
+    return to_api_config(get_config(), user_id=user_id)
 
 
 @app.get("/companions")
-async def get_companions():
-    return list_companions()
+async def get_companions(authorization: str | None = Header(default=None)):
+    user_id = get_request_user_id(authorization)
+    return list_companions(user_id=user_id)
 
 
 @app.get("/companions/active")
-async def get_active_companion_endpoint():
-    return get_active_companion()
+async def get_active_companion_endpoint(authorization: str | None = Header(default=None)):
+    user_id = get_request_user_id(authorization)
+    return ensure_active_companion_for_user(user_id)
 
 
 @app.post("/companions")
-async def create_companion_endpoint(payload: CompanionCreateRequest):
-    if len(list_companions()) >= 1 and not is_vip_user():
+async def create_companion_endpoint(payload: CompanionCreateRequest, authorization: str | None = Header(default=None)):
+    user_id = get_request_user_id(authorization)
+    if len(list_companions(user_id=user_id)) >= 1 and not is_vip_user():
         raise HTTPException(status_code=403, detail="Free tier allows only one companion")
 
     companion_id = create_companion(
@@ -1515,15 +1684,17 @@ async def create_companion_endpoint(payload: CompanionCreateRequest):
         character_type=payload.character_type,
         personality_tags=payload.personality_tags,
         interaction_mode=payload.interaction_mode,
+        user_id=user_id,
     )
     return {"status": "ok", "id": companion_id}
 
 
 @app.post("/companions/{companion_id}/activate")
-async def activate_companion(companion_id: int):
-    if not any(companion["id"] == companion_id for companion in list_companions()):
+async def activate_companion(companion_id: int, authorization: str | None = Header(default=None)):
+    user_id = get_request_user_id(authorization)
+    if not any(companion["id"] == companion_id for companion in list_companions(user_id=user_id)):
         raise HTTPException(status_code=404, detail="Companion not found")
-    set_active_companion(companion_id)
+    set_active_companion(companion_id, user_id=user_id)
     return {"status": "ok"}
 
 
@@ -1587,14 +1758,15 @@ async def import_model(payload: ImportedModelRequest):
     return {"status": "ok", "id": model_id, "model_path": public_model_path}
 
 @app.post("/config", response_model=Config)
-async def save_config_endpoint(config: ConfigUpdate):
+async def save_config_endpoint(config: ConfigUpdate, authorization: str | None = Header(default=None)):
     """保存配置"""
+    user_id = get_request_user_id(authorization)
     current = get_config()
     updates = config.model_dump(exclude_unset=True, exclude_none=True)
     for field, value in updates.items():
         setattr(current, field, value)
 
-    active_companion = get_active_companion()
+    active_companion = get_active_companion(user_id=user_id)
     if active_companion is not None:
         update_companion(
             active_companion["id"],
@@ -1602,10 +1774,11 @@ async def save_config_endpoint(config: ConfigUpdate):
             character_type=updates.get("character_type"),
             personality_tags=updates.get("personality"),
             interaction_mode=updates.get("interaction_mode"),
+            user_id=user_id,
         )
 
     persist_config(current)
-    return to_api_config(current)
+    return to_api_config(current, user_id=user_id)
 
 # ============== 占位回复生成 ==============
 
