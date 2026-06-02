@@ -90,6 +90,7 @@ from backend.provider_services import (
     parse_wechat_payment_notification,
     send_login_sms,
 )
+from backend.passthrough_chat import iter_passthrough_live_stream, iter_passthrough_stream
 
 MODEL_CATALOG = [
     {
@@ -289,6 +290,34 @@ class ChatMessage(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     context: List[ChatMessage] = Field(default_factory=list)
+
+
+class PassthroughContextMessage(BaseModel):
+    role: str
+    content: str
+
+    @field_validator("role")
+    @classmethod
+    def validate_role(cls, value: str) -> str:
+        normalized = value.strip()
+        if normalized not in {"user", "assistant"}:
+            raise ValueError("context role must be user or assistant")
+        return normalized
+
+
+class PassthroughChatRequest(BaseModel):
+    system_prompt: str
+    message: str
+    context: List[PassthroughContextMessage] = Field(default_factory=list)
+
+    @field_validator("system_prompt", "message")
+    @classmethod
+    def validate_non_empty_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("must not be empty")
+        return normalized
+
 
 class ChatResponse(BaseModel):
     content: str
@@ -892,6 +921,48 @@ def search_general_web(query: str) -> str:
     raise ValueError("No general search summary found")
 
 
+def build_search_context_block(query: str, search_result: str) -> str:
+    normalized_query = (query or "").strip()
+    normalized_result = (search_result or "").strip()
+    if not normalized_result:
+        raise ValueError("Search result is empty")
+
+    return (
+        "以下是实时检索结果，请优先依据这些结果回答；"
+        "如果和已有知识冲突，以这些结果为准；"
+        "不要说自己不能实时查询。\n"
+        f"用户问题：{normalized_query}\n"
+        f"实时检索结果：{normalized_result}"
+    )
+
+
+def resolve_search_result(message: str) -> str:
+    if is_weather_query(message):
+        return search_weather(message)
+    if is_datetime_query(message):
+        return get_current_datetime_context(message)
+    if is_exchange_rate_query(message):
+        return search_exchange_rate(message)
+    if is_news_query(message):
+        return search_news(message)
+    return search_general_web(message)
+
+
+def build_live_search_context_block(message: str) -> str:
+    return build_search_context_block(message, resolve_search_result(message))
+
+
+def iter_local_search_result_stream(result_factory):
+    yield sse_event("state", "thinking")
+    yield sse_event("phase", "searching")
+
+    reply = result_factory()
+    for part in split_reply_for_stream(reply):
+        if part:
+            yield sse_event("assistant_delta", part)
+    yield sse_event("done", "done")
+
+
 def sse_event(event: str, data: str) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
@@ -1486,6 +1557,33 @@ async def chat_stream(request: ChatRequest):
     current = apply_active_companion(get_config())
     return StreamingResponse(
         safe_stream_native_live_response(request.message, request.context, current),
+        media_type="text/event-stream",
+    )
+
+
+@app.post("/chat/stream/passthrough")
+async def chat_stream_passthrough(request: PassthroughChatRequest):
+    current = get_config()
+    api_key, base_url, model = resolve_llm_settings(current)
+    context = [item.model_dump() for item in request.context]
+    if needs_live_search(request.message):
+        try:
+            return StreamingResponse(
+                iter_local_search_result_stream(lambda: resolve_search_result(request.message)),
+                media_type="text/event-stream",
+            )
+        except Exception:
+            pass
+    return StreamingResponse(
+        iter_passthrough_stream(
+            system_prompt=request.system_prompt,
+            context=context,
+            message=request.message,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            timeout=STREAM_LLM_TIMEOUT,
+        ),
         media_type="text/event-stream",
     )
 

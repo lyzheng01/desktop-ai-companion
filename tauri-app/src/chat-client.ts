@@ -9,14 +9,29 @@ export interface ChatMessage {
     timestamp?: string;
 }
 
+type ChatReplyPayload = {
+    content?: string;
+    text?: string;
+};
+
 export interface ChatConfig {
     apiEndpoint?: string;
     model?: string;
     memoryContextProvider?: () => ChatMessage[];
     profileContextProvider?: () => ChatMessage[];
     historyContextProvider?: () => ChatMessage[];
+    systemPromptProvider?: () => string;
     clientVersionProvider?: () => string;
 }
+
+type StandardChatRequest = {
+    message: string;
+    context: ChatMessage[];
+};
+
+type PassthroughChatRequest = StandardChatRequest & {
+    system_prompt: string;
+};
 
 export interface MemoryItem {
     id: number;
@@ -91,6 +106,23 @@ export class ChatClient {
         return [...memoryContext, ...profileContext, ...historyContext, ...this.messages.slice(-10)];
     }
 
+    private buildChatRequest(message: string): StandardChatRequest | PassthroughChatRequest {
+        const context = this.buildRequestContext();
+        const systemPrompt = this.config.systemPromptProvider?.()?.trim();
+        if (systemPrompt) {
+            return {
+                system_prompt: systemPrompt,
+                message,
+                context,
+            };
+        }
+
+        return {
+            message,
+            context,
+        };
+    }
+
     private buildRequestHeaders(extraHeaders: HeadersInit = {}): HeadersInit {
         return {
             'Content-Type': 'application/json',
@@ -153,13 +185,11 @@ export class ChatClient {
         };
         this.messages.push(userMsg);
 
-        const response = await fetch(this.getEndpointUrl('chat-stream'), {
+        const request = this.buildChatRequest(content);
+        const response = await fetch(this.getEndpointUrl('system_prompt' in request ? 'chat-stream-passthrough' : 'chat-stream'), {
             method: 'POST',
             headers: this.buildRequestHeaders(),
-            body: JSON.stringify({
-                message: content,
-                context: this.buildRequestContext(),
-            }),
+            body: JSON.stringify(request),
         }).catch(() => null);
 
         if (!response || !response.ok || !response.body) {
@@ -167,58 +197,7 @@ export class ChatClient {
         }
 
         try {
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder();
-            let buffer = '';
-            let currentEvent = '';
-            let finalContent = '';
-
-            const processBlock = (block: string) => {
-                const lines = block.split('\n');
-                let data = '';
-
-                for (const rawLine of lines) {
-                    const line = rawLine.trimEnd();
-                    if (line.startsWith('event:')) {
-                        currentEvent = line.slice(6).trim();
-                    } else if (line.startsWith('data:')) {
-                        data += line.slice(5).trimStart();
-                    }
-                }
-
-                if ((currentEvent === 'state' || currentEvent === 'phase') && onState) {
-                    onState(data);
-                }
-                if (currentEvent === 'assistant_delta') {
-                    finalContent += data;
-                    onDelta(data);
-                }
-            };
-
-            while (true) {
-                const { done, value } = await reader.read();
-                buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-
-                const blocks = buffer.split('\n\n');
-                buffer = blocks.pop() || '';
-
-                for (const block of blocks) {
-                    processBlock(block);
-                }
-
-                if (done) {
-                    break;
-                }
-            }
-
-            if (buffer.trim()) {
-                processBlock(buffer);
-            }
-
-            if (!finalContent.trim()) {
-                throw new Error('Streaming response completed without assistant content');
-            }
-
+            const finalContent = await this.consumeSseResponse(response, onDelta, onState);
             const aiMsg: ChatMessage = {
                 role: 'assistant',
                 content: finalContent,
@@ -381,27 +360,45 @@ export class ChatClient {
     // 调用 AI 接口
     private async callAI(userMessage: string): Promise<ChatMessage> {
         // 方案 1: 调用本地 Python 后端
-        const localEndpoint = this.getEndpointUrl('chat');
+        const request = this.buildChatRequest(userMessage);
+        const usesPassthrough = 'system_prompt' in request;
 
         try {
-            const response = await fetch(localEndpoint, {
-                method: 'POST',
-                headers: this.buildRequestHeaders(),
-                body: JSON.stringify({
-                    message: userMessage,
-                    context: this.buildRequestContext(),
-                }),
-            });
+            if (usesPassthrough) {
+                const response = await fetch(this.getEndpointUrl('chat-stream-passthrough'), {
+                    method: 'POST',
+                    headers: this.buildRequestHeaders(),
+                    body: JSON.stringify(request),
+                });
 
-            if (response.ok) {
-                const data = await response.json();
-                const aiMsg: ChatMessage = {
-                    role: 'assistant',
-                    content: data.content,
-                    timestamp: new Date().toISOString(),
-                };
-                this.messages.push(aiMsg);
-                return aiMsg;
+                if (response.ok && response.body) {
+                    const content = await this.consumeSseResponse(response);
+                    const aiMsg: ChatMessage = {
+                        role: 'assistant',
+                        content,
+                        timestamp: new Date().toISOString(),
+                    };
+                    this.messages.push(aiMsg);
+                    return aiMsg;
+                }
+            } else {
+                const response = await fetch(this.getEndpointUrl('chat'), {
+                    method: 'POST',
+                    headers: this.buildRequestHeaders(),
+                    body: JSON.stringify(request),
+                });
+
+                if (response.ok) {
+                    const data = await response.json() as ChatReplyPayload;
+                    const content = data.content ?? data.text ?? this.generateFallbackResponse(userMessage);
+                    const aiMsg: ChatMessage = {
+                        role: 'assistant',
+                        content,
+                        timestamp: new Date().toISOString(),
+                    };
+                    this.messages.push(aiMsg);
+                    return aiMsg;
+                }
             }
         } catch (error) {
             console.warn('本地后端不可用，使用模拟回复');
@@ -429,13 +426,77 @@ export class ChatClient {
         return responses[Math.floor(Math.random() * responses.length)];
     }
 
-    private getEndpointUrl(kind: 'chat' | 'chat-stream' | 'history' | 'memory' | 'companions' | 'companions-active' | 'models-imported' | 'models-catalog' | 'models-catalog-install' | 'data-dir'): string {
+    private async consumeSseResponse(
+        response: Response,
+        onDelta?: (chunk: string) => void,
+        onState?: (state: string) => void,
+    ): Promise<string> {
+        const reader = response.body?.getReader();
+        if (!reader) {
+            throw new Error('Streaming response body is unavailable');
+        }
+
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalContent = '';
+
+        const processBlock = (block: string) => {
+            let currentEvent = '';
+            let data = '';
+
+            for (const rawLine of block.split('\n')) {
+                const line = rawLine.trimEnd();
+                if (line.startsWith('event:')) {
+                    currentEvent = line.slice(6).trim();
+                } else if (line.startsWith('data:')) {
+                    data += line.slice(5).trimStart();
+                }
+            }
+
+            if ((currentEvent === 'state' || currentEvent === 'phase') && onState) {
+                onState(data);
+            }
+
+            if (currentEvent === 'assistant_delta') {
+                finalContent += data;
+                onDelta?.(data);
+            }
+        };
+
+        while (true) {
+            const { done, value } = await reader.read();
+            buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+
+            const blocks = buffer.split('\n\n');
+            buffer = blocks.pop() || '';
+            for (const block of blocks) {
+                processBlock(block);
+            }
+
+            if (done) {
+                break;
+            }
+        }
+
+        if (buffer.trim()) {
+            processBlock(buffer);
+        }
+
+        if (!finalContent.trim()) {
+            throw new Error('Streaming response completed without assistant content');
+        }
+
+        return finalContent;
+    }
+
+    private getEndpointUrl(kind: 'chat' | 'chat-stream' | 'chat-stream-passthrough' | 'history' | 'memory' | 'companions' | 'companions-active' | 'models-imported' | 'models-catalog' | 'models-catalog-install' | 'data-dir'): string {
         const endpoint = new URL(this.config.apiEndpoint || 'http://119.91.32.174:8080/chat');
         const pathSegments = endpoint.pathname.split('/').filter(Boolean);
 
         const targetPath = {
             chat: 'chat',
             'chat-stream': 'chat/stream',
+            'chat-stream-passthrough': 'chat/stream/passthrough',
             history: 'history',
             memory: 'memory',
             companions: 'companions',

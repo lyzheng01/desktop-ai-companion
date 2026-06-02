@@ -292,6 +292,7 @@ const chatClient = new ChatClient({
     memoryContextProvider: () => buildFrontendMemoryContextMessages(),
     profileContextProvider: () => buildFrontendProfileContextMessages(),
     historyContextProvider: () => buildFrontendHistoryContextMessages(),
+    systemPromptProvider: () => buildFrontendSystemPrompt(),
     clientVersionProvider: () => currentAppVersion,
 });
 
@@ -490,6 +491,46 @@ const PERSONA_LABEL_MAP: Record<PersonaType, string> = {
     energetic: '元气型',
     companion: '陪伴型',
 };
+const LEGACY_USER_DISPLAY_NAMES = new Set(['', '你', '用户']);
+
+function normalizeUserDisplayName(value: string | null | undefined) {
+    const normalized = (value ?? '').trim();
+    return LEGACY_USER_DISPLAY_NAMES.has(normalized) ? '主人' : normalized;
+}
+
+function getEffectiveUserDisplayName() {
+    return normalizeUserDisplayName(appSettings.user_display_name);
+}
+
+function getProactiveModeLabel() {
+    if (appSettings.proactive_mode === 'quiet') {
+        return '尽量安静';
+    }
+    if (appSettings.proactive_mode === 'greet') {
+        return '有价值时打招呼';
+    }
+    return '适合提醒推进';
+}
+
+function buildFrontendSystemPrompt() {
+    const characterName = appSettings.character_name || 'Mao';
+    const userDisplayName = getEffectiveUserDisplayName();
+    const personaLabel = getPersonaLabel(appSettings.persona_type);
+    const personalityTags = appSettings.personality.length > 0 ? appSettings.personality.join('、') : '温柔';
+    return [
+        `你是${characterName}，是陪伴在桌面上的 AI 虚拟人。`,
+        `你正在陪伴的用户叫${userDisplayName}，默认直接称呼对方为${userDisplayName}，不要称“用户”。`,
+        `当前人格原型：${personaLabel}。`,
+        `当前人格标签：${personalityTags}。`,
+        `当前互动模式：${getInteractionModeLabel(appSettings.interaction_mode)}。`,
+        `当前主动模式：${getProactiveModeLabel()}。`,
+        '默认使用中文，先给结论，再补简短解释。',
+        '用户没有要求时保持简洁、自然、有陪伴感，不要像客服，不要长篇展开。',
+        '如果用户询问天气、新闻、汇率、日期时间等实时信息，优先依据实时检索结果回答，不要说自己不能实时查询。',
+        `如果用户询问你的名字、你是谁，明确回答你叫${characterName}。`,
+    ].join('\n');
+}
+
 let stateIndicatorMode: CompanionState | null = null;
 
 function logProductEvent(name: string, payload: Record<string, unknown> = {}) {
@@ -1093,9 +1134,13 @@ async function loadAppSettings(options: {
     try {
         const raw = await invoke<string>('load_frontend_config_file');
         const data = JSON.parse(raw || '{}') as Partial<AppSettings>;
+        const normalizedUserDisplayName = normalizeUserDisplayName(data.user_display_name);
+        const shouldMigrateLegacyUserDisplayName =
+            typeof data.user_display_name === 'string'
+            && normalizedUserDisplayName !== data.user_display_name.trim();
         appSettings = {
             user_nickname: data.user_nickname ?? '小伙伴',
-            user_display_name: data.user_display_name ?? '主人',
+            user_display_name: normalizedUserDisplayName,
             character_type: data.character_type ?? 'mao_pro_zh',
             character_name: data.character_name ?? 'Mao',
             persona_type: normalizePersonaType((data as Partial<AppSettings>).persona_type),
@@ -1134,6 +1179,9 @@ async function loadAppSettings(options: {
         currentCharacter = live2dModels[nextCharacter] || nextCharacter.startsWith('imported:')
             ? nextCharacter
             : 'mao_pro_zh';
+        if (shouldMigrateLegacyUserDisplayName) {
+            await saveAppSettings();
+        }
     } catch (error) {
         console.warn('Failed to load config, using defaults.', error);
     }
@@ -1152,6 +1200,7 @@ async function loadDataDirInfo() {
 async function saveAppSettings() {
     appSettings.character_type = currentCharacter;
     appSettings.window_scale = currentScale;
+    appSettings.user_display_name = getEffectiveUserDisplayName();
 
     try {
         await invoke('save_frontend_config_file', { payload: JSON.stringify(appSettings) });
@@ -1552,7 +1601,7 @@ function buildFrontendMemorySummary() {
     const derived: FrontendMemoryItem[] = [
         {
             id: 'derived-user-name',
-            content: `用户希望被称呼为${appSettings.user_display_name || '你'}`,
+            content: `用户希望被称呼为${getEffectiveUserDisplayName()}`,
             scope: 'preference',
             created_at: new Date(0).toISOString(),
         },
@@ -1667,7 +1716,7 @@ function buildPreferencesMarkdown() {
         '',
         '## 当前角色设定',
         `- 角色名：${appSettings.character_name || 'Mao'}`,
-        `- 用户称呼：${appSettings.user_display_name || appSettings.user_nickname || '你'}`,
+        `- 用户称呼：${getEffectiveUserDisplayName()}`,
         `- 当前人格原型：${getPersonaLabel(appSettings.persona_type)}`,
         `- 内部气质标签：${appSettings.personality.join('、') || '温柔'}`,
         '',
@@ -1691,7 +1740,7 @@ function buildUserProfileMarkdown() {
         '# user_profile.md',
         '',
         '## 基本信息',
-        `- 用户称呼：${appSettings.user_display_name || appSettings.user_nickname || '你'}`,
+        `- 用户称呼：${getEffectiveUserDisplayName()}`,
         '- 常用语言：中文',
         '- 当前使用场景：桌面陪伴 + 轻量协作',
         '',
@@ -1866,7 +1915,7 @@ function buildUserProfileContextMessage() {
         .map((item) => item.content);
 
     const lines = dedupeTextItems([
-        `用户称呼偏好：${appSettings.user_display_name || appSettings.user_nickname || '你'}`,
+        `用户称呼偏好：${getEffectiveUserDisplayName()}`,
         `当前人格原型：${getPersonaLabel(appSettings.persona_type)}`,
         `当前互动模式：${getInteractionModeLabel(appSettings.interaction_mode)}`,
         `当前主动模式：${appSettings.proactive_mode === 'quiet' ? '尽量安静' : appSettings.proactive_mode === 'greet' ? '有价值时打招呼' : '适合提醒推进'}`,
@@ -2602,7 +2651,7 @@ function bindCompanionSettingsForm() {
 
     const userDisplayNameInput = document.getElementById('user-display-name-input') as HTMLInputElement | null;
     userDisplayNameInput?.addEventListener('change', () => {
-        appSettings.user_display_name = userDisplayNameInput.value.trim() || '你';
+        appSettings.user_display_name = normalizeUserDisplayName(userDisplayNameInput.value);
         syncCompanionSettingsForm();
         void saveAppSettings();
     });

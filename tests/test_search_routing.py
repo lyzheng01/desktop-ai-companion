@@ -18,6 +18,23 @@ def test_build_search_context_block_formats_search_result():
     assert "合肥今天多云" in result
 
 
+def test_iter_local_search_result_stream_emits_searching_before_lookup():
+    from backend.server import iter_local_search_result_stream
+
+    calls = []
+
+    def fake_lookup():
+        calls.append("called")
+        return "合肥今天多云，25°C"
+
+    iterator = iter_local_search_result_stream(fake_lookup)
+
+    assert next(iterator) == "event: state\ndata: thinking\n\n"
+    assert calls == []
+    assert next(iterator) == "event: phase\ndata: searching\n\n"
+    assert calls == []
+
+
 def test_extract_weather_location_drops_freshness_words():
     assert extract_weather_location("合肥今天天气如何") == "合肥"
 

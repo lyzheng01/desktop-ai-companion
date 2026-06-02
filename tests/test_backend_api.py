@@ -49,6 +49,55 @@ def test_chat_prefers_native_live_response_for_live_queries(monkeypatch):
     assert "2026年05月16日" in response.json()["content"]
 
 
+def test_passthrough_route_uses_frontend_prompt_without_persisting_user_display_name(monkeypatch):
+    reset_live_config(AppConfig(user_nickname="小伙伴", user_display_name="你"))
+
+    captured = {}
+
+    monkeypatch.setattr(
+        server_module,
+        "resolve_llm_settings",
+        lambda config: ("key", "http://example.test/v1", "demo-model"),
+    )
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"主人，你好"}}]}'
+            yield "data: [DONE]"
+
+    class DummyStream:
+        def __enter__(self):
+            return DummyResponse()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_stream(method, url, **kwargs):
+        captured["method"] = method
+        captured["url"] = url
+        captured["json"] = kwargs.get("json")
+        return DummyStream()
+
+    monkeypatch.setattr("backend.passthrough_chat.httpx.stream", fake_stream)
+
+    response = client.post(
+        "/chat/stream/passthrough",
+        json={
+            "system_prompt": "你正在陪伴的用户叫主人。",
+            "message": "你好",
+            "context": [],
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["method"] == "POST"
+    assert captured["url"] == "http://example.test/v1/chat/completions"
+    assert captured["json"]["messages"][0] == {"role": "system", "content": "你正在陪伴的用户叫主人。"}
+    assert AppConfig.load(config_module.CONFIG_FILE).user_display_name == "你"
+    assert config_module.config.user_display_name == "你"
+
 def test_proactive_weather_endpoint_returns_content(monkeypatch):
     monkeypatch.setattr(server_module, "build_proactive_weather_line", lambda location='合肥': f"{location}今天晴天，适合出门。")
 
