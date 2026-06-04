@@ -58,6 +58,36 @@ PLAN_DEFINITIONS = [
     },
 ]
 
+STORE_PRODUCT_DEFINITIONS = [
+    {
+        "product_code": "role_item_miku_nt",
+        "product_name": "Hatsune Miku NT",
+        "product_type": "character_item",
+        "cash_price_fen": 500,
+        "point_price": 500,
+        "status": "active",
+        "payload": {"asset_path": "Defaults/Avatars/HatsuneMikuNT.vrm"},
+    },
+    {
+        "product_code": "dance_item_world_is_mine",
+        "product_name": "World is Mine Dance",
+        "product_type": "dance_item",
+        "cash_price_fen": 500,
+        "point_price": 500,
+        "status": "active",
+        "payload": {"asset_path": "CustomDances/Defaults/MMD-World is Mine.unity3d"},
+    },
+    {
+        "product_code": "music_item_world_is_mine",
+        "product_name": "World is Mine Song",
+        "product_type": "music_item",
+        "cash_price_fen": 100,
+        "point_price": 100,
+        "status": "active",
+        "payload": {"asset_path": "CustomDances/Defaults/World is Mine.mp3"},
+    },
+]
+
 
 def mysql_is_configured() -> bool:
     return all(
@@ -191,6 +221,25 @@ def init_business_tables() -> None:
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     INDEX idx_user_memberships_user_id (user_id),
                     CONSTRAINT fk_user_memberships_user FOREIGN KEY (user_id) REFERENCES users(id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_entitlements (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    user_id BIGINT NOT NULL,
+                    entitlement_code VARCHAR(128) NOT NULL,
+                    entitlement_type VARCHAR(32) NOT NULL,
+                    source_product_code VARCHAR(64) NOT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'active',
+                    expires_at DATETIME NULL,
+                    payload_json JSON NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_user_entitlements_code (user_id, entitlement_code),
+                    INDEX idx_user_entitlements_user_id (user_id),
+                    CONSTRAINT fk_user_entitlements_user FOREIGN KEY (user_id) REFERENCES users(id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
@@ -504,6 +553,71 @@ def get_user_membership(user_id: int) -> dict:
         "expires_at": row["expires_at"],
         "benefits": _parse_benefits(row),
     }
+
+
+def list_store_products() -> list[dict]:
+    products: list[dict] = []
+    for item in STORE_PRODUCT_DEFINITIONS:
+        if item["status"] != "active":
+            continue
+        products.append(
+            {
+                "product_code": item["product_code"],
+                "product_name": item["product_name"],
+                "product_type": item["product_type"],
+                "cash_price_fen": int(item["cash_price_fen"]),
+                "point_price": int(item["point_price"]),
+                "status": item["status"],
+                "payload": dict(item.get("payload") or {}),
+            }
+        )
+    return products
+
+
+def list_user_entitlements(user_id: int) -> list[dict]:
+    if not mysql_is_configured():
+        return []
+
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT entitlement_code, entitlement_type, source_product_code, status, expires_at, payload_json
+                FROM user_entitlements
+                WHERE user_id = %s
+                  AND status = 'active'
+                  AND (expires_at IS NULL OR expires_at > %s)
+                ORDER BY id ASC
+                """,
+                (user_id, now_utc()),
+            )
+            rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    entitlements: list[dict] = []
+    for row in rows:
+        payload = row.get("payload_json")
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except json.JSONDecodeError:
+                payload = {}
+        elif payload is None:
+            payload = {}
+
+        entitlements.append(
+            {
+                "entitlement_code": row["entitlement_code"],
+                "entitlement_type": row["entitlement_type"],
+                "source_product_code": row["source_product_code"],
+                "status": row["status"],
+                "expires_at": row["expires_at"],
+                "payload": payload if isinstance(payload, dict) else {},
+            }
+        )
+    return entitlements
 
 
 def create_payment_order(user_id: int, plan_code: str, pay_channel: str, wechat_code_url: str | None = None, wechat_prepay_id: str | None = None) -> dict:

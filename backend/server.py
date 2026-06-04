@@ -81,6 +81,8 @@ from backend.business_store import (
     get_user_membership,
     init_business_tables,
     list_membership_plans,
+    list_store_products,
+    list_user_entitlements,
     mark_order_paid,
     mysql_is_configured,
     now_utc,
@@ -535,9 +537,19 @@ class AuthSessionResponse(BaseModel):
     membership: MembershipResponse
 
 
+class EntitlementResponse(BaseModel):
+    entitlement_code: str
+    entitlement_type: str
+    source_product_code: str
+    status: str
+    expires_at: datetime | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
 class MeResponse(BaseModel):
     user: UserResponse
     membership: MembershipResponse
+    entitlements: list[EntitlementResponse] = Field(default_factory=list)
 
 
 class MembershipPlanResponse(BaseModel):
@@ -547,6 +559,16 @@ class MembershipPlanResponse(BaseModel):
     duration_days: int
     tier: str
     benefits: dict[str, object] = Field(default_factory=dict)
+
+
+class StoreProductResponse(BaseModel):
+    product_code: str
+    product_name: str
+    product_type: str
+    cash_price_fen: int
+    point_price: int
+    status: str
+    payload: dict[str, object] = Field(default_factory=dict)
 
 
 class CreateWechatOrderRequest(BaseModel):
@@ -1625,7 +1647,19 @@ async def logout_endpoint(payload: LogoutRequest):
 async def me_endpoint(authorization: str | None = Header(default=None)):
     user = get_current_user(authorization)
     membership = get_user_membership(int(user["id"]))
-    return MeResponse(user=build_user_response(user), membership=build_membership_response(membership))
+    entitlements = list_user_entitlements(int(user["id"]))
+    return MeResponse(
+        user=build_user_response(user),
+        membership=build_membership_response(membership),
+        entitlements=[EntitlementResponse(**item) for item in entitlements],
+    )
+
+
+@app.get("/store/products", response_model=list[StoreProductResponse])
+async def list_store_products_endpoint():
+    ensure_business_ready()
+    products = list_store_products()
+    return [StoreProductResponse(**product) for product in products]
 
 
 @app.get("/billing/plans", response_model=list[MembershipPlanResponse])
