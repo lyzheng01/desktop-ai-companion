@@ -30,6 +30,39 @@ def generate_sms_code() -> str:
     return f"{random.randint(0, 999999):06d}"
 
 
+def get_sms_captcha_provider() -> str:
+    return os.getenv("DESKTOP_AI_COMPANION_CAPTCHA_PROVIDER", "mock").strip().lower() or "mock"
+
+
+def get_sms_captcha_client_config() -> dict:
+    provider = get_sms_captcha_provider()
+    if provider == "tencent":
+        app_id = os.getenv("TENCENT_CAPTCHA_APP_ID", "").strip() or None
+        return {
+            "enabled": True,
+            "provider": "tencent",
+            "app_id": app_id,
+        }
+
+    if provider != "mock":
+        raise NotImplementedError(f"Unsupported captcha provider: {provider}")
+
+    return {
+        "enabled": False,
+        "provider": "mock",
+        "app_id": None,
+    }
+
+
+def verify_sms_captcha(captcha_ticket: str, captcha_randstr: str, user_ip: str | None) -> dict:
+    provider = get_sms_captcha_provider()
+    if provider == "tencent":
+        return _verify_tencent_captcha(captcha_ticket, captcha_randstr, user_ip)
+    if provider != "mock":
+        raise NotImplementedError(f"Unsupported captcha provider: {provider}")
+    return {"provider": "mock", "status": "skipped"}
+
+
 def create_wechat_native_payment(order_no: str, amount_fen: int, description: str) -> dict:
     provider = os.getenv("DESKTOP_AI_COMPANION_WECHAT_PAY_PROVIDER", "mock").strip().lower() or "mock"
     if provider == "wechat":
@@ -96,7 +129,7 @@ def _send_tencent_sms(phone: str, code: str) -> dict:
         "SmsSdkAppId": sdk_app_id,
         "SignName": sign_name,
         "TemplateId": template_id,
-        "TemplateParamSet": [code, "5"],
+        "TemplateParamSet": [code],
         "PhoneNumberSet": [f"+86{phone}"],
     }
     payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -141,6 +174,72 @@ def _send_tencent_sms(phone: str, code: str) -> dict:
     if send_status.get("Code") != "Ok":
         raise RuntimeError(send_status.get("Message") or "Tencent SMS send failed")
     return {"provider": "tencent", "debug_code": None, "response": data}
+
+
+def _verify_tencent_captcha(captcha_ticket: str, captcha_randstr: str, user_ip: str | None) -> dict:
+    secret_id = _require_env("TENCENTCLOUD_SECRET_ID")
+    secret_key = _require_env("TENCENTCLOUD_SECRET_KEY")
+    captcha_app_id = _require_env("TENCENT_CAPTCHA_APP_ID")
+    captcha_app_secret_key = _require_env("TENCENT_CAPTCHA_APP_SECRET_KEY")
+    endpoint = "captcha.tencentcloudapi.com"
+    service = "captcha"
+    host = endpoint
+    action = "DescribeCaptchaResult"
+    version = "2019-07-22"
+    region = os.getenv("TENCENT_CAPTCHA_REGION", "ap-guangzhou")
+    timestamp = int(time.time())
+    date = time.strftime("%Y-%m-%d", time.gmtime(timestamp))
+    payload = {
+        "CaptchaType": 9,
+        "Ticket": captcha_ticket,
+        "Randstr": captcha_randstr,
+        "UserIp": user_ip or "127.0.0.1",
+        "CaptchaAppId": int(captcha_app_id),
+        "AppSecretKey": captcha_app_secret_key,
+    }
+    payload_json = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    canonical_headers = f"content-type:application/json; charset=utf-8\nhost:{host}\nx-tc-action:{action.lower()}\n"
+    signed_headers = "content-type;host;x-tc-action"
+    canonical_request = "\n".join([
+        "POST",
+        "/",
+        "",
+        canonical_headers,
+        signed_headers,
+        _sha256_hex(payload_json.encode("utf-8")),
+    ])
+    credential_scope = f"{date}/{service}/tc3_request"
+    string_to_sign = "\n".join([
+        "TC3-HMAC-SHA256",
+        str(timestamp),
+        credential_scope,
+        _sha256_hex(canonical_request.encode("utf-8")),
+    ])
+    secret_date = _hmac_sha256(("TC3" + secret_key).encode("utf-8"), date)
+    secret_service = hmac.new(secret_date, service.encode("utf-8"), hashlib.sha256).digest()
+    secret_signing = hmac.new(secret_service, b"tc3_request", hashlib.sha256).digest()
+    signature = hmac.new(secret_signing, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    authorization = (
+        f"TC3-HMAC-SHA256 Credential={secret_id}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    headers = {
+        "Authorization": authorization,
+        "Content-Type": "application/json; charset=utf-8",
+        "Host": host,
+        "X-TC-Action": action,
+        "X-TC-Timestamp": str(timestamp),
+        "X-TC-Version": version,
+        "X-TC-Region": region,
+    }
+    response = httpx.post(f"https://{endpoint}", headers=headers, content=payload_json, timeout=15)
+    response.raise_for_status()
+    data = response.json()
+    result = data.get("Response") or {}
+    captcha_code = int(result.get("CaptchaCode", 0) or 0)
+    if captcha_code != 1:
+        raise ValueError(result.get("CaptchaMsg") or "Tencent captcha verification failed")
+    return {"provider": "tencent", "response": data}
 
 
 def _load_private_key_from_env(env_name: str):

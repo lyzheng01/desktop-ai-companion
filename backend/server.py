@@ -28,7 +28,7 @@ DEFAULT_TTS_SERVER_BASE_URL = os.getenv("DESKTOP_AI_COMPANION_TTS_SERVER_URL", "
 
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 from typing import List
@@ -61,10 +61,13 @@ from backend.auth_utils import (
     generate_refresh_token,
     hash_refresh_token,
     hash_sms_code,
+    hash_user_password,
     sign_access_token,
+    verify_user_password,
     verify_access_token,
 )
 from backend.business_store import (
+    create_user_with_password,
     create_payment_order,
     create_sms_code,
     create_user_session,
@@ -73,6 +76,7 @@ from backend.business_store import (
     get_payment_order,
     get_plan,
     get_session_by_refresh_token_hash,
+    get_user_by_phone,
     get_user_by_id,
     get_user_membership,
     init_business_tables,
@@ -80,6 +84,7 @@ from backend.business_store import (
     mark_order_paid,
     mysql_is_configured,
     now_utc,
+    set_user_password,
     store_payment_callback,
     consume_sms_code,
     update_payment_order_provider_fields,
@@ -87,8 +92,11 @@ from backend.business_store import (
 from backend.provider_services import (
     create_wechat_native_payment,
     generate_sms_code,
+    get_sms_captcha_client_config,
+    get_sms_captcha_provider,
     parse_wechat_payment_notification,
     send_login_sms,
+    verify_sms_captcha,
 )
 from backend.passthrough_chat import iter_passthrough_live_stream, iter_passthrough_stream
 
@@ -453,6 +461,8 @@ class ConfigUpdate(BaseModel):
 class SmsSendRequest(BaseModel):
     phone: str
     scene: str = "login"
+    captcha_ticket: str | None = None
+    captcha_randstr: str | None = None
 
 
 class SmsSendResponse(BaseModel):
@@ -462,12 +472,34 @@ class SmsSendResponse(BaseModel):
     debug_code: str | None = None
 
 
+class SmsCaptchaConfigResponse(BaseModel):
+    enabled: bool
+    provider: str
+    app_id: str | None = None
+
+
 class SmsLoginRequest(BaseModel):
     phone: str
     code: str
     device_id: str | None = None
     device_name: str | None = None
     scene: str = "login"
+
+
+class RegisterRequest(BaseModel):
+    phone: str
+    password: str = Field(min_length=6)
+    code: str
+    device_id: str | None = None
+    device_name: str | None = None
+    scene: str = "register"
+
+
+class PasswordLoginRequest(BaseModel):
+    phone: str
+    password: str = Field(min_length=6)
+    device_id: str | None = None
+    device_name: str | None = None
 
 
 class RefreshTokenRequest(BaseModel):
@@ -579,6 +611,178 @@ def validate_phone_number(phone: str) -> str:
     if not re.fullmatch(r"1\d{10}", normalized):
         raise HTTPException(status_code=400, detail="Invalid phone number")
     return normalized
+
+
+def validate_password_text(password: str) -> str:
+    normalized = (password or "").strip()
+    if len(normalized) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+    return normalized
+
+
+def verify_sms_send_captcha(
+    phone: str,
+    scene: str,
+    captcha_ticket: str | None,
+    captcha_randstr: str | None,
+    user_ip: str | None,
+) -> None:
+    if get_sms_captcha_provider() != "tencent":
+        return
+
+    normalized_ticket = (captcha_ticket or "").strip()
+    normalized_randstr = (captcha_randstr or "").strip()
+    if not normalized_ticket or not normalized_randstr:
+        raise HTTPException(status_code=400, detail="Captcha verification is required before sending SMS code")
+
+    try:
+        verify_sms_captcha(normalized_ticket, normalized_randstr, user_ip)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except RuntimeError as error:
+        detail = str(error)
+        status_code = 503 if detail.startswith("Missing environment variable:") else 502
+        raise HTTPException(status_code=status_code, detail=detail) from error
+    except NotImplementedError as error:
+        raise HTTPException(status_code=501, detail=str(error)) from error
+
+
+def raise_sms_provider_http_error(error: RuntimeError) -> None:
+    detail = str(error).strip() or "SMS provider request failed"
+    normalized = detail.lower()
+
+    if detail.startswith("Missing environment variable:"):
+        raise HTTPException(status_code=503, detail=detail) from error
+    if "upper limit" in normalized or "frequency limit" in normalized or "too many" in normalized:
+        raise HTTPException(status_code=429, detail=detail) from error
+
+    raise HTTPException(status_code=502, detail=detail) from error
+
+
+def build_sms_captcha_page_html(app_id: str) -> str:
+    escaped_app_id = json.dumps(app_id)
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mate Engine Security Check</title>
+  <style>
+    html, body {{
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      background: #f5f7fb;
+      color: #1f2937;
+      font-family: "Microsoft YaHei", sans-serif;
+    }}
+
+    body {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }}
+
+    .shell {{
+      width: min(100vw, 420px);
+      min-height: 480px;
+      box-sizing: border-box;
+      padding: 24px 20px 20px;
+      background: #ffffff;
+      border-radius: 18px;
+      box-shadow: 0 24px 80px rgba(15, 23, 42, 0.16);
+    }}
+
+    .title {{
+      margin: 0 0 8px;
+      font-size: 22px;
+      font-weight: 700;
+    }}
+
+    .subtitle {{
+      margin: 0 0 18px;
+      color: #6b7280;
+      font-size: 14px;
+      line-height: 1.6;
+    }}
+
+    #captcha-root {{
+      min-height: 360px;
+    }}
+
+    .hint {{
+      margin-top: 16px;
+      color: #94a3b8;
+      font-size: 12px;
+      text-align: center;
+    }}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <h1 class="title">安全验证</h1>
+    <p class="subtitle">请先完成腾讯验证码验证，然后继续发送短信验证码。</p>
+    <div id="captcha-root"></div>
+    <div class="hint">验证完成后窗口会自动关闭</div>
+  </main>
+  <script>
+    const captchaAppId = {escaped_app_id};
+
+    function notifyHost(action, params) {{
+      const query = new URLSearchParams(params || {{}}).toString();
+      const suffix = query ? `?${{query}}` : "";
+      window.location.href = `mate-engine-captcha://${{action}}${{suffix}}`;
+    }}
+
+    function handleCaptchaResult(result) {{
+      if (result && result.ticket && result.randstr) {{
+        notifyHost("success", {{
+          ticket: result.ticket,
+          randstr: result.randstr,
+          errorCode: result.errorCode || "",
+          errorMessage: result.errorMessage || "",
+        }});
+        return;
+      }}
+
+      if (result && result.ret === 2) {{
+        notifyHost("cancel");
+        return;
+      }}
+
+      notifyHost("error", {{
+        message: result && result.errorMessage ? result.errorMessage : "Captcha verification did not complete",
+      }});
+    }}
+
+    function mountCaptcha() {{
+      try {{
+        const host = document.getElementById("captcha-root");
+        const captcha = new TencentCaptcha(host, captchaAppId, handleCaptchaResult, {{ type: "embed" }});
+        captcha.show();
+      }} catch (error) {{
+        notifyHost("error", {{
+          message: error && error.message ? error.message : "Captcha initialization failed",
+        }});
+      }}
+    }}
+
+    function loadCaptchaScript() {{
+      const script = document.createElement("script");
+      script.src = "https://turing.captcha.qcloud.com/TJCaptcha.js";
+      script.async = true;
+      script.onload = mountCaptcha;
+      script.onerror = function () {{
+        notifyHost("error", {{ message: "Captcha script failed to load" }});
+      }};
+      document.head.appendChild(script);
+    }}
+
+    loadCaptchaScript();
+  </script>
+</body>
+</html>"""
 
 
 def build_user_response(user: dict) -> UserResponse:
@@ -1300,14 +1504,18 @@ async def health_check():
 async def send_sms_code_endpoint(payload: SmsSendRequest, request: Request):
     ensure_business_ready()
     phone = validate_phone_number(payload.phone)
+    request_ip = request.client.host if request.client else None
+    verify_sms_send_captcha(phone, payload.scene, payload.captcha_ticket, payload.captcha_randstr, request_ip)
     code = generate_sms_code()
     code_hash = hash_sms_code(phone, payload.scene, code)
     expires_at = now_utc().fromtimestamp(now_utc().timestamp() + 5 * 60)
     try:
         provider_result = send_login_sms(phone, code)
-        create_sms_code(phone, payload.scene, code_hash, expires_at, request.client.host if request.client else None)
+        create_sms_code(phone, payload.scene, code_hash, expires_at, request_ip)
     except ValueError as error:
         raise HTTPException(status_code=429, detail=str(error)) from error
+    except RuntimeError as error:
+        raise_sms_provider_http_error(error)
     except NotImplementedError as error:
         raise HTTPException(status_code=501, detail=str(error)) from error
 
@@ -1316,6 +1524,32 @@ async def send_sms_code_endpoint(payload: SmsSendRequest, request: Request):
         provider=str(provider_result.get("provider", "unknown")),
         debug_code=provider_result.get("debug_code"),
     )
+
+
+@app.get("/auth/sms/captcha/config", response_model=SmsCaptchaConfigResponse)
+async def get_sms_captcha_config_endpoint():
+    try:
+        return SmsCaptchaConfigResponse(**get_sms_captcha_client_config())
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except NotImplementedError as error:
+        raise HTTPException(status_code=501, detail=str(error)) from error
+
+
+@app.get("/auth/sms/captcha/page", response_class=HTMLResponse)
+async def get_sms_captcha_page_endpoint():
+    try:
+        config = get_sms_captcha_client_config()
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except NotImplementedError as error:
+        raise HTTPException(status_code=501, detail=str(error)) from error
+
+    if not config.get("enabled"):
+        raise HTTPException(status_code=404, detail="SMS captcha is disabled")
+    if not config.get("app_id"):
+        raise HTTPException(status_code=503, detail="Tencent captcha app id is not configured")
+    return HTMLResponse(build_sms_captcha_page_html(str(config["app_id"])))
 
 
 @app.post("/auth/sms/login", response_model=AuthSessionResponse)
@@ -1327,6 +1561,43 @@ async def sms_login_endpoint(payload: SmsLoginRequest):
         raise HTTPException(status_code=400, detail="Invalid or expired verification code")
 
     user = get_or_create_user_by_phone(phone)
+    return issue_auth_session(user, payload.device_id, payload.device_name)
+
+
+@app.post("/auth/register", response_model=AuthSessionResponse)
+async def register_endpoint(payload: RegisterRequest):
+    ensure_business_ready()
+    phone = validate_phone_number(payload.phone)
+    password = validate_password_text(payload.password)
+    code_hash = hash_sms_code(phone, payload.scene, payload.code.strip())
+    if not consume_sms_code(phone, payload.scene, code_hash):
+        raise HTTPException(status_code=400, detail="Invalid or expired verification code")
+
+    existing_user = get_user_by_phone(phone)
+    password_hash = hash_user_password(password)
+    if existing_user and existing_user.get("password_hash"):
+        raise HTTPException(status_code=409, detail="Phone already registered")
+
+    if existing_user:
+        user = set_user_password(int(existing_user["id"]), password_hash)
+    else:
+        user = create_user_with_password(phone, password_hash)
+
+    if not user:
+        raise HTTPException(status_code=500, detail="Failed to create account")
+    return issue_auth_session(user, payload.device_id, payload.device_name)
+
+
+@app.post("/auth/password/login", response_model=AuthSessionResponse)
+async def password_login_endpoint(payload: PasswordLoginRequest):
+    ensure_business_ready()
+    phone = validate_phone_number(payload.phone)
+    password = validate_password_text(payload.password)
+    user = get_user_by_phone(phone)
+    if not user or not user.get("password_hash"):
+        raise HTTPException(status_code=401, detail="Invalid phone or password")
+    if not verify_user_password(password, str(user["password_hash"])):
+        raise HTTPException(status_code=401, detail="Invalid phone or password")
     return issue_auth_session(user, payload.device_id, payload.device_name)
 
 

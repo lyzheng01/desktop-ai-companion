@@ -12,6 +12,8 @@ from . import config as config_module
 
 DB_PATH = config_module.DB_PATH
 APP_IMPORTED_MODELS_DIR = config_module.APP_DIR / "assets" / "live2d" / "imported"
+LEGACY_USER_ID = 0
+LEGACY_COMPANION_ID = 0
 REMOVED_IMPORTED_MODEL_PATHS = {
     "/live2d/imported/gantzert-felixander---gantzert-felixander-model3---1/Gantzert_Felixander.model3.json",
     "/live2d/imported/rice-pro-en---rice-pro-t03-model3---1/rice_pro_t03.model3.json",
@@ -56,8 +58,12 @@ def init_db():
     """)
     cursor.execute("PRAGMA table_info(characters)")
     character_columns = {row["name"] for row in cursor.fetchall()}
+    if "user_id" not in character_columns:
+        cursor.execute("ALTER TABLE characters ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
     if "interaction_mode" not in character_columns:
         cursor.execute("ALTER TABLE characters ADD COLUMN interaction_mode TEXT DEFAULT 'work'")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_characters_user_id ON characters(user_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_characters_user_active ON characters(user_id, is_active)")
 
     # 聊天记录表
     cursor.execute("""
@@ -69,6 +75,14 @@ def init_db():
             session_id TEXT
         )
     """)
+    cursor.execute("PRAGMA table_info(chat_messages)")
+    chat_columns = {row["name"] for row in cursor.fetchall()}
+    if "user_id" not in chat_columns:
+        cursor.execute("ALTER TABLE chat_messages ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+    if "companion_id" not in chat_columns:
+        cursor.execute("ALTER TABLE chat_messages ADD COLUMN companion_id INTEGER NOT NULL DEFAULT 0")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_owner ON chat_messages(user_id, companion_id, id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_messages_session ON chat_messages(session_id)")
 
     # 记忆表
     cursor.execute("""
@@ -82,8 +96,14 @@ def init_db():
     """)
     cursor.execute("PRAGMA table_info(memories)")
     memory_columns = {row["name"] for row in cursor.fetchall()}
+    if "user_id" not in memory_columns:
+        cursor.execute("ALTER TABLE memories ADD COLUMN user_id INTEGER NOT NULL DEFAULT 0")
+    if "companion_id" not in memory_columns:
+        cursor.execute("ALTER TABLE memories ADD COLUMN companion_id INTEGER NOT NULL DEFAULT 0")
     if "scope" not in memory_columns:
         cursor.execute("ALTER TABLE memories ADD COLUMN scope TEXT DEFAULT 'long_term'")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_owner_scope ON memories(user_id, companion_id, scope, created_at)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_memories_owner_category ON memories(user_id, companion_id, category, created_at)")
 
     # 导入模型表
     cursor.execute("""
@@ -118,6 +138,7 @@ def _parse_personality_tags(value: Optional[str]) -> List[str]:
 def _character_row_to_companion(row: sqlite3.Row) -> Dict:
     return {
         "id": row["id"],
+        "user_id": row["user_id"] if "user_id" in row.keys() else LEGACY_USER_ID,
         "name": row["name"],
         "character_type": row["type"],
         "personality_tags": _parse_personality_tags(row["personality"]),
@@ -135,18 +156,19 @@ def create_companion(
     personality_tags: list[str],
     interaction_mode: str,
     is_active: bool = False,
+    user_id: int = LEGACY_USER_ID,
 ) -> int:
     """创建陪伴角色"""
     conn = get_connection()
     cursor = conn.cursor()
     if is_active:
-        cursor.execute("UPDATE characters SET is_active = 0, updated_at = CURRENT_TIMESTAMP")
+        cursor.execute("UPDATE characters SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
     cursor.execute(
         """
-        INSERT INTO characters (name, type, personality, interaction_mode, is_active, updated_at)
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO characters (user_id, name, type, personality, interaction_mode, is_active, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     """,
-        (name, character_type, json.dumps(personality_tags, ensure_ascii=False), interaction_mode, int(is_active)),
+        (user_id, name, character_type, json.dumps(personality_tags, ensure_ascii=False), interaction_mode, int(is_active)),
     )
     companion_id = cursor.lastrowid
     conn.commit()
@@ -154,34 +176,37 @@ def create_companion(
     return companion_id
 
 
-def list_companions() -> List[Dict]:
+def list_companions(user_id: int = LEGACY_USER_ID) -> List[Dict]:
     """列出所有陪伴角色"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, name, type, personality, interaction_mode, avatar_path, is_active, created_at, updated_at
+        SELECT id, user_id, name, type, personality, interaction_mode, avatar_path, is_active, created_at, updated_at
         FROM characters
+        WHERE user_id = ?
         ORDER BY id ASC
-    """
+    """,
+        (user_id,),
     )
     rows = cursor.fetchall()
     conn.close()
     return [_character_row_to_companion(row) for row in rows]
 
 
-def get_active_companion() -> Optional[Dict]:
+def get_active_companion(user_id: int = LEGACY_USER_ID) -> Optional[Dict]:
     """获取当前激活的陪伴角色"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
         """
-        SELECT id, name, type, personality, interaction_mode, avatar_path, is_active, created_at, updated_at
+        SELECT id, user_id, name, type, personality, interaction_mode, avatar_path, is_active, created_at, updated_at
         FROM characters
-        WHERE is_active = 1
+        WHERE user_id = ? AND is_active = 1
         ORDER BY id DESC
         LIMIT 1
-    """
+    """,
+        (user_id,),
     )
     row = cursor.fetchone()
     conn.close()
@@ -190,18 +215,18 @@ def get_active_companion() -> Optional[Dict]:
     return _character_row_to_companion(row)
 
 
-def set_active_companion(companion_id: int):
+def set_active_companion(companion_id: int, user_id: int = LEGACY_USER_ID):
     """切换当前激活的陪伴角色"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute("SELECT 1 FROM characters WHERE id = ?", (companion_id,))
+    cursor.execute("SELECT 1 FROM characters WHERE id = ? AND user_id = ?", (companion_id, user_id))
     if cursor.fetchone() is None:
         conn.close()
         return
-    cursor.execute("UPDATE characters SET is_active = 0, updated_at = CURRENT_TIMESTAMP")
+    cursor.execute("UPDATE characters SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?", (user_id,))
     cursor.execute(
-        "UPDATE characters SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-        (companion_id,),
+        "UPDATE characters SET is_active = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+        (companion_id, user_id),
     )
     conn.commit()
     conn.close()
@@ -214,6 +239,7 @@ def update_companion(
     character_type: str | None = None,
     personality_tags: list[str] | None = None,
     interaction_mode: str | None = None,
+    user_id: int = LEGACY_USER_ID,
 ):
     conn = get_connection()
     cursor = conn.cursor()
@@ -238,8 +264,9 @@ def update_companion(
         return
 
     values.append(companion_id)
+    values.append(user_id)
     cursor.execute(
-        f"UPDATE characters SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        f"UPDATE characters SET {', '.join(updates)}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
         values,
     )
     conn.commit()
@@ -271,19 +298,30 @@ def get_setting(key: str, default: Any = None) -> Any:
 
 # ============== 聊天记录 CRUD ==============
 
-def save_message(role: str, content: str, session_id: Optional[str] = None):
+def save_message(
+    role: str,
+    content: str,
+    session_id: Optional[str] = None,
+    user_id: int = LEGACY_USER_ID,
+    companion_id: int = LEGACY_COMPANION_ID,
+):
     """保存聊天消息"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO chat_messages (role, content, session_id)
-        VALUES (?, ?, ?)
-    """, (role, content, session_id))
+        INSERT INTO chat_messages (user_id, companion_id, role, content, session_id)
+        VALUES (?, ?, ?, ?, ?)
+    """, (user_id, companion_id, role, content, session_id))
     conn.commit()
     conn.close()
 
 
-def get_messages(limit: int = 50, session_id: Optional[str] = None) -> List[Dict]:
+def get_messages(
+    limit: int = 50,
+    session_id: Optional[str] = None,
+    user_id: int = LEGACY_USER_ID,
+    companion_id: int = LEGACY_COMPANION_ID,
+) -> List[Dict]:
     """获取聊天记录"""
     conn = get_connection()
     cursor = conn.cursor()
@@ -292,17 +330,18 @@ def get_messages(limit: int = 50, session_id: Optional[str] = None) -> List[Dict
         cursor.execute("""
             SELECT role, content, timestamp
             FROM chat_messages
-            WHERE session_id = ?
+            WHERE user_id = ? AND companion_id = ? AND session_id = ?
             ORDER BY id DESC
             LIMIT ?
-        """, (session_id, limit))
+        """, (user_id, companion_id, session_id, limit))
     else:
         cursor.execute("""
             SELECT role, content, timestamp
             FROM chat_messages
+            WHERE user_id = ? AND companion_id = ?
             ORDER BY id DESC
             LIMIT ?
-        """, (limit,))
+        """, (user_id, companion_id, limit))
 
     rows = cursor.fetchall()
     conn.close()
@@ -313,33 +352,52 @@ def get_messages(limit: int = 50, session_id: Optional[str] = None) -> List[Dict
     ][::-1]  # 正序返回
 
 
-def clear_messages(session_id: Optional[str] = None):
+def clear_messages(
+    session_id: Optional[str] = None,
+    user_id: int = LEGACY_USER_ID,
+    companion_id: int = LEGACY_COMPANION_ID,
+):
     """清空聊天记录"""
     conn = get_connection()
     cursor = conn.cursor()
     if session_id:
-        cursor.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
+        cursor.execute(
+            "DELETE FROM chat_messages WHERE user_id = ? AND companion_id = ? AND session_id = ?",
+            (user_id, companion_id, session_id),
+        )
     else:
-        cursor.execute("DELETE FROM chat_messages")
+        cursor.execute("DELETE FROM chat_messages WHERE user_id = ? AND companion_id = ?", (user_id, companion_id))
     conn.commit()
     conn.close()
 
 
 # ============== 记忆 CRUD ==============
 
-def save_memory(content: str, category: str = "fact", importance: int = 1, scope: str = "long_term"):
+def save_memory(
+    content: str,
+    category: str = "fact",
+    importance: int = 1,
+    scope: str = "long_term",
+    user_id: int = LEGACY_USER_ID,
+    companion_id: int = LEGACY_COMPANION_ID,
+):
     """保存记忆"""
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        INSERT INTO memories (content, category, importance, scope)
-        VALUES (?, ?, ?, ?)
-    """, (content, category, importance, scope))
+        INSERT INTO memories (user_id, companion_id, content, category, importance, scope)
+        VALUES (?, ?, ?, ?, ?, ?)
+    """, (user_id, companion_id, content, category, importance, scope))
     conn.commit()
     conn.close()
 
 
-def get_memories(category: Optional[str] = None, scope: Optional[str] = None) -> List[Dict]:
+def get_memories(
+    category: Optional[str] = None,
+    scope: Optional[str] = None,
+    user_id: int = LEGACY_USER_ID,
+    companion_id: int = LEGACY_COMPANION_ID,
+) -> List[Dict]:
     """获取记忆"""
     conn = get_connection()
     cursor = conn.cursor()
@@ -348,29 +406,30 @@ def get_memories(category: Optional[str] = None, scope: Optional[str] = None) ->
         cursor.execute("""
             SELECT id, content, category, importance, scope, created_at
             FROM memories
-            WHERE category = ? AND scope = ?
+            WHERE user_id = ? AND companion_id = ? AND category = ? AND scope = ?
             ORDER BY importance DESC, created_at DESC
-        """, (category, scope))
+        """, (user_id, companion_id, category, scope))
     elif category:
         cursor.execute("""
             SELECT id, content, category, importance, scope, created_at
             FROM memories
-            WHERE category = ?
+            WHERE user_id = ? AND companion_id = ? AND category = ?
             ORDER BY importance DESC, created_at DESC
-        """, (category,))
+        """, (user_id, companion_id, category))
     elif scope:
         cursor.execute("""
             SELECT id, content, category, importance, scope, created_at
             FROM memories
-            WHERE scope = ?
+            WHERE user_id = ? AND companion_id = ? AND scope = ?
             ORDER BY importance DESC, created_at DESC
-        """, (scope,))
+        """, (user_id, companion_id, scope))
     else:
         cursor.execute("""
             SELECT id, content, category, importance, scope, created_at
             FROM memories
+            WHERE user_id = ? AND companion_id = ?
             ORDER BY importance DESC, created_at DESC
-        """)
+        """, (user_id, companion_id))
 
     rows = cursor.fetchall()
     conn.close()
@@ -388,18 +447,33 @@ def get_memories(category: Optional[str] = None, scope: Optional[str] = None) ->
     ]
 
 
-def delete_expired_short_term_memories(max_age_hours: int = 168):
+def delete_expired_short_term_memories(
+    max_age_hours: int = 168,
+    user_id: int | None = None,
+    companion_id: int | None = None,
+):
     """删除过期的短期记忆"""
     conn = get_connection()
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        DELETE FROM memories
-        WHERE scope = 'short_term'
-          AND created_at < datetime('now', ?)
-    """,
-        (f'-{max_age_hours} hours',),
-    )
+    if user_id is None or companion_id is None:
+        cursor.execute(
+            """
+            DELETE FROM memories
+            WHERE scope = 'short_term'
+              AND created_at < datetime('now', ?)
+        """,
+            (f'-{max_age_hours} hours',),
+        )
+    else:
+        cursor.execute(
+            """
+            DELETE FROM memories
+            WHERE user_id = ? AND companion_id = ?
+              AND scope = 'short_term'
+              AND created_at < datetime('now', ?)
+        """,
+            (user_id, companion_id, f'-{max_age_hours} hours'),
+        )
     conn.commit()
     conn.close()
 

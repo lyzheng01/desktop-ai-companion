@@ -123,6 +123,7 @@ def init_business_tables() -> None:
                 CREATE TABLE IF NOT EXISTS users (
                     id BIGINT PRIMARY KEY AUTO_INCREMENT,
                     phone VARCHAR(32) NOT NULL UNIQUE,
+                    password_hash VARCHAR(255) NULL,
                     nickname VARCHAR(64) NULL,
                     avatar_url VARCHAR(255) NULL,
                     status VARCHAR(32) NOT NULL DEFAULT 'active',
@@ -247,6 +248,9 @@ def init_business_tables() -> None:
                         plan["benefits_json"],
                     ),
                 )
+            cursor.execute("SHOW COLUMNS FROM users LIKE 'password_hash'")
+            if cursor.fetchone() is None:
+                cursor.execute("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255) NULL AFTER phone")
         conn.commit()
     finally:
         conn.close()
@@ -320,6 +324,56 @@ def get_or_create_user_by_phone(phone: str) -> dict:
             created = cursor.fetchone()
         conn.commit()
         return created
+    finally:
+        conn.close()
+
+
+def get_user_by_phone(phone: str) -> dict | None:
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM users WHERE phone = %s LIMIT 1", (phone,))
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def create_user_with_password(phone: str, password_hash: str) -> dict:
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            nickname = f"用户{phone[-4:]}" if len(phone) >= 4 else "新用户"
+            cursor.execute(
+                """
+                INSERT INTO users (phone, password_hash, nickname, status)
+                VALUES (%s, %s, %s, 'active')
+                """,
+                (phone, password_hash, nickname),
+            )
+            cursor.execute("SELECT * FROM users WHERE id = LAST_INSERT_ID()")
+            created = cursor.fetchone()
+        conn.commit()
+        return created
+    finally:
+        conn.close()
+
+
+def set_user_password(user_id: int, password_hash: str) -> dict | None:
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE users
+                SET password_hash = %s
+                WHERE id = %s
+                """,
+                (password_hash, user_id),
+            )
+            cursor.execute("SELECT * FROM users WHERE id = %s LIMIT 1", (user_id,))
+            updated = cursor.fetchone()
+        conn.commit()
+        return updated
     finally:
         conn.close()
 

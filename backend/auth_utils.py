@@ -9,6 +9,7 @@ import time
 
 ACCESS_TOKEN_TTL_SECONDS = int(os.getenv("DESKTOP_AI_COMPANION_ACCESS_TOKEN_TTL", "7200"))
 REFRESH_TOKEN_TTL_SECONDS = int(os.getenv("DESKTOP_AI_COMPANION_REFRESH_TOKEN_TTL", str(30 * 24 * 60 * 60)))
+PASSWORD_HASH_ITERATIONS = int(os.getenv("DESKTOP_AI_COMPANION_PASSWORD_HASH_ITERATIONS", "600000"))
 
 
 def _get_auth_secret() -> str:
@@ -74,3 +75,42 @@ def hash_refresh_token(token: str) -> str:
 def hash_sms_code(phone: str, scene: str, code: str) -> str:
     base = f"{phone}:{scene}:{code}:{_get_auth_secret()}"
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+
+def hash_user_password(password: str) -> str:
+    normalized = (password or "").strip()
+    if len(normalized) < 6:
+        raise ValueError("Password must be at least 6 characters")
+
+    salt = secrets.token_bytes(16)
+    digest = hashlib.pbkdf2_hmac("sha256", normalized.encode("utf-8"), salt, PASSWORD_HASH_ITERATIONS)
+    return "pbkdf2_sha256${iterations}${salt}${digest}".format(
+        iterations=PASSWORD_HASH_ITERATIONS,
+        salt=base64.b64encode(salt).decode("ascii"),
+        digest=base64.b64encode(digest).decode("ascii"),
+    )
+
+
+def verify_user_password(password: str, password_hash: str) -> bool:
+    normalized = (password or "").strip()
+    encoded = (password_hash or "").strip()
+    if not normalized or not encoded:
+        return False
+
+    try:
+        algorithm, iterations_text, salt_b64, digest_b64 = encoded.split("$", 3)
+    except ValueError:
+        return False
+
+    if algorithm != "pbkdf2_sha256":
+        return False
+
+    try:
+        iterations = int(iterations_text)
+        salt = base64.b64decode(salt_b64.encode("ascii"))
+        expected_digest = base64.b64decode(digest_b64.encode("ascii"))
+    except (ValueError, TypeError):
+        return False
+
+    actual_digest = hashlib.pbkdf2_hmac("sha256", normalized.encode("utf-8"), salt, iterations)
+    return hmac.compare_digest(expected_digest, actual_digest)
