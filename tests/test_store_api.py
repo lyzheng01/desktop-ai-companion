@@ -7,38 +7,38 @@ import backend.server as server_module
 client = TestClient(app)
 
 
-def test_store_products_endpoint_returns_active_content_items(monkeypatch):
+def test_store_products_endpoint_returns_subscription_products_only(monkeypatch):
     monkeypatch.setattr(server_module, "ensure_business_ready", lambda: None)
     monkeypatch.setattr(
         server_module,
-        "list_store_products",
+        "list_membership_plans",
         lambda: [
             {
-                "product_code": "role_item_miku_nt",
-                "product_name": "Hatsune Miku NT",
-                "product_type": "character_item",
-                "cash_price_fen": 500,
-                "point_price": 500,
+                "plan_code": "free",
+                "plan_name": "Free",
+                "price_fen": 0,
+                "duration_days": 0,
+                "tier": "free",
                 "status": "active",
-                "payload": {"asset_path": "Defaults/Avatars/HatsuneMikuNT.vrm"},
+                "benefits": {"model_access_level": "free"},
             },
             {
-                "product_code": "dance_item_world_is_mine",
-                "product_name": "World is Mine Dance",
-                "product_type": "dance_item",
-                "cash_price_fen": 500,
-                "point_price": 500,
+                "plan_code": "vip_monthly",
+                "plan_name": "VIP Monthly",
+                "price_fen": 1990,
+                "duration_days": 30,
+                "tier": "vip",
                 "status": "active",
-                "payload": {"asset_path": "CustomDances/Defaults/MMD-World is Mine.unity3d"},
+                "benefits": {"model_access_level": "vip"},
             },
             {
-                "product_code": "music_item_world_is_mine",
-                "product_name": "World is Mine Song",
-                "product_type": "music_item",
-                "cash_price_fen": 100,
-                "point_price": 100,
+                "plan_code": "svip_monthly",
+                "plan_name": "SVIP Monthly",
+                "price_fen": 3990,
+                "duration_days": 30,
+                "tier": "svip",
                 "status": "active",
-                "payload": {"asset_path": "CustomDances/Defaults/World is Mine.mp3"},
+                "benefits": {"model_access_level": "svip"},
             },
         ],
     )
@@ -47,21 +47,18 @@ def test_store_products_endpoint_returns_active_content_items(monkeypatch):
 
     assert response.status_code == 200
     data = response.json()
-    assert [item["product_code"] for item in data] == [
-        "role_item_miku_nt",
-        "dance_item_world_is_mine",
-        "music_item_world_is_mine",
+    assert [item["plan_code"] for item in data] == [
+        "vip_monthly",
+        "svip_monthly",
     ]
-    assert data[0]["cash_price_fen"] == 500
-    assert data[0]["point_price"] == 500
-    assert data[1]["product_type"] == "dance_item"
-    assert data[2]["product_type"] == "music_item"
-    assert data[2]["cash_price_fen"] == 100
-    assert data[2]["point_price"] == 100
-    assert data[2]["payload"]["asset_path"].endswith("World is Mine.mp3")
+    assert data[0]["price_fen"] == 1990
+    assert data[0]["duration_days"] == 30
+    assert data[0]["tier"] == "vip"
+    assert data[1]["tier"] == "svip"
+    assert data[1]["benefits"]["model_access_level"] == "svip"
 
 
-def test_me_endpoint_returns_membership_and_entitlements(monkeypatch):
+def test_me_endpoint_returns_membership_points_and_entitlements(monkeypatch):
     monkeypatch.setattr(
         server_module,
         "get_current_user",
@@ -85,33 +82,18 @@ def test_me_endpoint_returns_membership_and_entitlements(monkeypatch):
             "benefits": {"model_access_level": "vip", "voice_access_level": "vip"},
         },
     )
+    monkeypatch.setattr(server_module, "get_user_points_balance", lambda user_id: 1200)
     monkeypatch.setattr(
         server_module,
         "list_user_entitlements",
         lambda user_id: [
             {
-                "entitlement_code": "role.miku_nt_default",
-                "entitlement_type": "permanent",
-                "source_product_code": "role_item_miku_nt",
-                "status": "active",
-                "expires_at": None,
-                "payload": {"asset_path": "Defaults/Avatars/HatsuneMikuNT.vrm"},
-            },
-            {
-                "entitlement_code": "dance.world_is_mine",
-                "entitlement_type": "permanent",
-                "source_product_code": "dance_item_world_is_mine",
-                "status": "active",
-                "expires_at": None,
-                "payload": {"asset_path": "CustomDances/Defaults/MMD-World is Mine.unity3d"},
-            },
-            {
                 "entitlement_code": "music.world_is_mine",
                 "entitlement_type": "permanent",
-                "source_product_code": "music_item_world_is_mine",
+                "source_product_code": "music_item_world_is_mine_remote",
                 "status": "active",
                 "expires_at": None,
-                "payload": {"asset_path": "CustomDances/Defaults/World is Mine.mp3"},
+                "payload": {"asset_key": "music/world-is-mine"},
             },
         ],
     )
@@ -121,10 +103,79 @@ def test_me_endpoint_returns_membership_and_entitlements(monkeypatch):
     assert response.status_code == 200
     data = response.json()
     assert data["membership"]["tier"] == "vip"
+    assert data["points_balance"] == 1200
     assert [item["entitlement_code"] for item in data["entitlements"]] == [
-        "role.miku_nt_default",
-        "dance.world_is_mine",
         "music.world_is_mine",
     ]
-    assert data["entitlements"][0]["source_product_code"] == "role_item_miku_nt"
-    assert data["entitlements"][2]["source_product_code"] == "music_item_world_is_mine"
+
+
+def test_create_membership_order_endpoint_returns_payment_page_url(monkeypatch):
+    monkeypatch.setattr(
+        server_module,
+        "get_current_user",
+        lambda authorization: {"id": 101, "phone": "13800138000", "nickname": "owner", "avatar_url": None, "status": "active"},
+    )
+    monkeypatch.setattr(
+        server_module,
+        "get_plan",
+        lambda plan_code: {
+            "plan_code": "vip_monthly",
+            "plan_name": "VIP Monthly",
+            "price_fen": 1990,
+            "duration_days": 30,
+            "status": "active",
+            "tier": "vip",
+            "benefits": {"model_access_level": "vip"},
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "create_payment_order",
+        lambda user_id, plan_code, pay_channel: {
+            "order_no": "DAC202606050001",
+            "plan_code": plan_code,
+            "amount_fen": 1990,
+            "status": "pending",
+            "pay_channel": pay_channel,
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "create_wechat_native_payment",
+        lambda order_no, amount_fen, description: {
+            "code_url": "weixin://wxpay/mock-membership",
+            "prepay_id": "mock-membership-prepay",
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "update_payment_order_provider_fields",
+        lambda order_no, wechat_code_url, wechat_prepay_id: {
+            "order_no": order_no,
+            "plan_code": "vip_monthly",
+            "amount_fen": 1990,
+            "status": "pending",
+            "pay_channel": "wechat_native",
+            "wechat_code_url": wechat_code_url,
+            "paid_at": None,
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "build_membership_payment_page_url",
+        lambda order_no, user_id: f"http://127.0.0.1:8080/payments/billing/{order_no}?token=billing-status-token-1",
+    )
+
+    response = client.post(
+        "/billing/orders/wechat-native",
+        json={"plan_code": "vip_monthly"},
+        headers={"Authorization": "Bearer access-token"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["order_no"] == "DAC202606050001"
+    assert data["plan_code"] == "vip_monthly"
+    assert data["amount_fen"] == 1990
+    assert data["code_url"] == "weixin://wxpay/mock-membership"
+    assert data["payment_page_url"] == "http://127.0.0.1:8080/payments/billing/DAC202606050001?token=billing-status-token-1"

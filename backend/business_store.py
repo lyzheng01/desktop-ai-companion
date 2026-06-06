@@ -58,33 +58,93 @@ PLAN_DEFINITIONS = [
     },
 ]
 
-STORE_PRODUCT_DEFINITIONS = [
+REMOTE_STORE_PRODUCT_DEFINITIONS = [
     {
-        "product_code": "role_item_miku_nt",
+        "product_code": "role_item_miku_nt_remote",
         "product_name": "Hatsune Miku NT",
         "product_type": "character_item",
-        "cash_price_fen": 500,
         "point_price": 500,
         "status": "active",
-        "payload": {"asset_path": "Defaults/Avatars/HatsuneMikuNT.vrm"},
+        "asset_key": "avatars/hatsune-miku-nt",
+        "asset_version": "2026.06.04",
+        "payload": {"title": "Hatsune Miku NT", "cover_path": "/static-assets/covers/role_item_miku_nt_remote.png"},
     },
     {
-        "product_code": "dance_item_world_is_mine",
+        "product_code": "dance_item_world_is_mine_remote",
         "product_name": "World is Mine Dance",
         "product_type": "dance_item",
-        "cash_price_fen": 500,
         "point_price": 500,
         "status": "active",
-        "payload": {"asset_path": "CustomDances/Defaults/MMD-World is Mine.unity3d"},
+        "asset_key": "dances/world-is-mine",
+        "asset_version": "2026.06.04",
+        "payload": {"title": "World is Mine Dance", "cover_path": "/static-assets/covers/dance_item_world_is_mine_remote.png"},
     },
     {
-        "product_code": "music_item_world_is_mine",
+        "product_code": "music_item_world_is_mine_remote",
         "product_name": "World is Mine Song",
         "product_type": "music_item",
-        "cash_price_fen": 100,
         "point_price": 100,
         "status": "active",
-        "payload": {"asset_path": "CustomDances/Defaults/World is Mine.mp3"},
+        "asset_key": "music/world-is-mine",
+        "asset_version": "2026.06.04",
+        "payload": {"title": "World is Mine Song"},
+    },
+]
+
+REMOTE_ASSET_MANIFEST_DEFINITIONS = {
+    "music/world-is-mine": {
+        "asset_key": "music/world-is-mine",
+        "asset_version": "2026.06.04",
+        "asset_hash": "sha256:abc123",
+        "asset_size": 123456,
+        "download_url": "https://assets.example.com/music/world-is-mine.zip",
+        "files": [{"path": "World is Mine.mp3", "size": 123456}],
+    },
+    "avatars/hatsune-miku-nt": {
+        "asset_key": "avatars/hatsune-miku-nt",
+        "asset_version": "2026.06.04",
+        "asset_hash": "sha256:def456",
+        "asset_size": 456789,
+        "download_url": "https://assets.example.com/avatars/hatsune-miku-nt.zip",
+        "files": [{"path": "HatsuneMikuNT.vrm", "size": 456789}],
+    },
+    "dances/world-is-mine": {
+        "asset_key": "dances/world-is-mine",
+        "asset_version": "2026.06.04",
+        "asset_hash": "sha256:ghi789",
+        "asset_size": 234567,
+        "download_url": "https://assets.example.com/dances/world-is-mine.zip",
+        "files": [
+            {"path": "World is Mine Dance.unity3d", "size": 200000},
+            {"path": "World is Mine.mp3", "size": 34567},
+        ],
+    },
+}
+
+POINT_TOPUP_PRODUCT_DEFINITIONS = [
+    {
+        "product_code": "points_pack_500",
+        "product_name": "500 Points",
+        "points_amount": 500,
+        "price_fen": 500,
+        "status": "active",
+        "payload": {"badge": "starter"},
+    },
+    {
+        "product_code": "points_pack_1100",
+        "product_name": "1100 Points",
+        "points_amount": 1100,
+        "price_fen": 1000,
+        "status": "active",
+        "payload": {"badge": "bonus"},
+    },
+    {
+        "product_code": "points_pack_2300",
+        "product_name": "2300 Points",
+        "points_amount": 2300,
+        "price_fen": 2000,
+        "status": "active",
+        "payload": {"badge": "best-value"},
     },
 ]
 
@@ -226,6 +286,34 @@ def init_business_tables() -> None:
             )
             cursor.execute(
                 """
+                CREATE TABLE IF NOT EXISTS user_point_accounts (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    user_id BIGINT NOT NULL UNIQUE,
+                    balance BIGINT NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    CONSTRAINT fk_user_point_accounts_user FOREIGN KEY (user_id) REFERENCES users(id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_point_ledger (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    user_id BIGINT NOT NULL,
+                    change_amount BIGINT NOT NULL,
+                    balance_after BIGINT NOT NULL,
+                    source_type VARCHAR(32) NOT NULL,
+                    source_order_no VARCHAR(64) NULL,
+                    remark VARCHAR(255) NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    INDEX idx_user_point_ledger_user_id (user_id),
+                    CONSTRAINT fk_user_point_ledger_user FOREIGN KEY (user_id) REFERENCES users(id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            cursor.execute(
+                """
                 CREATE TABLE IF NOT EXISTS user_entitlements (
                     id BIGINT PRIMARY KEY AUTO_INCREMENT,
                     user_id BIGINT NOT NULL,
@@ -240,6 +328,28 @@ def init_business_tables() -> None:
                     UNIQUE KEY uk_user_entitlements_code (user_id, entitlement_code),
                     INDEX idx_user_entitlements_user_id (user_id),
                     CONSTRAINT fk_user_entitlements_user FOREIGN KEY (user_id) REFERENCES users(id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS point_topup_orders (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    order_no VARCHAR(64) NOT NULL UNIQUE,
+                    user_id BIGINT NOT NULL,
+                    product_code VARCHAR(64) NOT NULL,
+                    points_amount BIGINT NOT NULL,
+                    amount_fen INT NOT NULL,
+                    status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                    pay_channel VARCHAR(32) NOT NULL DEFAULT 'wechat_native',
+                    wechat_prepay_id VARCHAR(128) NULL,
+                    wechat_code_url TEXT NULL,
+                    wechat_transaction_id VARCHAR(128) NULL,
+                    paid_at DATETIME NULL,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    INDEX idx_point_topup_orders_user_id (user_id),
+                    CONSTRAINT fk_point_topup_orders_user FOREIGN KEY (user_id) REFERENCES users(id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
@@ -557,7 +667,7 @@ def get_user_membership(user_id: int) -> dict:
 
 def list_store_products() -> list[dict]:
     products: list[dict] = []
-    for item in STORE_PRODUCT_DEFINITIONS:
+    for item in REMOTE_STORE_PRODUCT_DEFINITIONS:
         if item["status"] != "active":
             continue
         products.append(
@@ -565,13 +675,359 @@ def list_store_products() -> list[dict]:
                 "product_code": item["product_code"],
                 "product_name": item["product_name"],
                 "product_type": item["product_type"],
-                "cash_price_fen": int(item["cash_price_fen"]),
                 "point_price": int(item["point_price"]),
+                "status": item["status"],
+                "asset_key": item["asset_key"],
+                "asset_version": item["asset_version"],
+                "payload": dict(item.get("payload") or {}),
+            }
+        )
+    return products
+
+
+def _catalog_kind_for_product(item: dict) -> str | None:
+    product_type = str(item.get("product_type") or "").lower()
+    asset_key = str(item.get("asset_key") or "").lower()
+    if product_type.startswith("character") or asset_key.startswith("avatars/"):
+        return "avatar"
+    if product_type.startswith("dance") or asset_key.startswith("dances/"):
+        return "dance"
+    return None
+
+
+def list_asset_catalog_products(kind: str | None = None) -> list[dict]:
+    normalized_kind = (kind or "").strip().lower() or None
+    products: list[dict] = []
+    for item in REMOTE_STORE_PRODUCT_DEFINITIONS:
+        if item["status"] != "active":
+            continue
+        product_kind = _catalog_kind_for_product(item)
+        if product_kind is None:
+            continue
+        if normalized_kind and product_kind != normalized_kind:
+            continue
+        payload = dict(item.get("payload") or {})
+        products.append(
+            {
+                "product_code": item["product_code"],
+                "product_name": item["product_name"],
+                "product_type": item["product_type"],
+                "point_price": int(item["point_price"]),
+                "status": item["status"],
+                "asset_key": item["asset_key"],
+                "asset_version": item["asset_version"],
+                "cover_url": str(payload.get("cover_path") or ""),
+                "payload": payload,
+            }
+        )
+    return products
+
+
+def get_asset_catalog_product(product_code: str) -> dict | None:
+    for item in list_asset_catalog_products():
+        if item["product_code"] == product_code:
+            return item
+    return None
+
+
+def get_store_product(product_code: str) -> dict | None:
+    for item in list_store_products():
+        if item["product_code"] == product_code:
+            return item
+    return None
+
+
+def get_user_points_balance(user_id: int) -> int:
+    if not mysql_is_configured():
+        return 0
+
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT balance FROM user_point_accounts WHERE user_id = %s LIMIT 1", (user_id,))
+            row = cursor.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        return 0
+    return int(row["balance"])
+
+
+def deduct_points_for_asset_product(user_id: int, product_code: str) -> int:
+    product = get_asset_catalog_product(product_code)
+    if not product:
+        raise ValueError("Invalid product")
+
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT balance FROM user_point_accounts WHERE user_id = %s LIMIT 1 FOR UPDATE", (user_id,))
+            account = cursor.fetchone()
+            current_balance = int(account["balance"]) if account else 0
+            point_price = int(product["point_price"])
+            if current_balance < point_price:
+                raise ValueError("Insufficient points")
+
+            new_balance = current_balance - point_price
+            if account:
+                cursor.execute("UPDATE user_point_accounts SET balance = %s WHERE user_id = %s", (new_balance, user_id))
+            else:
+                cursor.execute("INSERT INTO user_point_accounts (user_id, balance) VALUES (%s, %s)", (user_id, new_balance))
+
+            cursor.execute(
+                """
+                INSERT INTO user_point_ledger (user_id, change_amount, balance_after, source_type, source_order_no, remark)
+                VALUES (%s, %s, %s, 'asset_acquire', NULL, %s)
+                """,
+                (user_id, -point_price, new_balance, product_code),
+            )
+        conn.commit()
+        return new_balance
+    finally:
+        conn.close()
+
+
+def list_point_topup_products() -> list[dict]:
+    products: list[dict] = []
+    for item in POINT_TOPUP_PRODUCT_DEFINITIONS:
+        if item["status"] != "active":
+            continue
+        products.append(
+            {
+                "product_code": item["product_code"],
+                "product_name": item["product_name"],
+                "points_amount": int(item["points_amount"]),
+                "price_fen": int(item["price_fen"]),
                 "status": item["status"],
                 "payload": dict(item.get("payload") or {}),
             }
         )
     return products
+
+
+def get_point_topup_product(product_code: str) -> dict | None:
+    for item in POINT_TOPUP_PRODUCT_DEFINITIONS:
+        if item["product_code"] == product_code and item["status"] == "active":
+            return {
+                "product_code": item["product_code"],
+                "product_name": item["product_name"],
+                "points_amount": int(item["points_amount"]),
+                "price_fen": int(item["price_fen"]),
+                "status": item["status"],
+                "payload": dict(item.get("payload") or {}),
+            }
+    return None
+
+
+def create_point_topup_order(
+    user_id: int,
+    product_code: str,
+    pay_channel: str,
+    points_amount: int | None = None,
+    amount_fen: int | None = None,
+    wechat_code_url: str | None = None,
+    wechat_prepay_id: str | None = None,
+) -> dict:
+    resolved_product_code = str(product_code or "").strip()
+    resolved_points_amount = points_amount
+    resolved_amount_fen = amount_fen
+
+    if resolved_points_amount is None or resolved_amount_fen is None:
+        product = get_point_topup_product(resolved_product_code)
+        if not product:
+            raise ValueError("Invalid point topup product")
+        resolved_product_code = product["product_code"]
+        resolved_points_amount = int(product["points_amount"])
+        resolved_amount_fen = int(product["price_fen"])
+
+    if int(resolved_points_amount) <= 0 or int(resolved_amount_fen) <= 0:
+        raise ValueError("Invalid point topup amount")
+
+    order_no = f"DACP{datetime.utcnow().strftime('%Y%m%d%H%M%S')}{uuid.uuid4().hex[:8].upper()}"
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO point_topup_orders (
+                    order_no, user_id, product_code, points_amount, amount_fen, status, pay_channel, wechat_prepay_id, wechat_code_url
+                ) VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s, %s)
+                """,
+                (
+                    order_no,
+                    user_id,
+                    resolved_product_code,
+                    int(resolved_points_amount),
+                    int(resolved_amount_fen),
+                    pay_channel,
+                    wechat_prepay_id,
+                    wechat_code_url,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_point_topup_order(order_no)
+
+
+def get_point_topup_order(order_no: str) -> dict | None:
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM point_topup_orders WHERE order_no = %s LIMIT 1", (order_no,))
+            return cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def update_point_topup_order_provider_fields(order_no: str, wechat_code_url: str | None, wechat_prepay_id: str | None) -> dict | None:
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE point_topup_orders
+                SET wechat_code_url = %s, wechat_prepay_id = %s
+                WHERE order_no = %s
+                """,
+                (wechat_code_url, wechat_prepay_id, order_no),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_point_topup_order(order_no)
+
+
+def mark_point_topup_order_paid(order_no: str, transaction_id: str | None) -> dict | None:
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT * FROM point_topup_orders WHERE order_no = %s LIMIT 1 FOR UPDATE", (order_no,))
+            order = cursor.fetchone()
+            if not order:
+                conn.rollback()
+                return None
+            if order["status"] == "paid":
+                conn.commit()
+                return order
+
+            paid_at = now_utc()
+            cursor.execute(
+                """
+                UPDATE point_topup_orders
+                SET status = 'paid', wechat_transaction_id = %s, paid_at = %s
+                WHERE order_no = %s
+                """,
+                (transaction_id, paid_at, order_no),
+            )
+
+            cursor.execute("SELECT balance FROM user_point_accounts WHERE user_id = %s LIMIT 1 FOR UPDATE", (order["user_id"],))
+            account = cursor.fetchone()
+            current_balance = int(account["balance"]) if account else 0
+            new_balance = current_balance + int(order["points_amount"])
+
+            if account:
+                cursor.execute(
+                    "UPDATE user_point_accounts SET balance = %s WHERE user_id = %s",
+                    (new_balance, order["user_id"]),
+                )
+            else:
+                cursor.execute(
+                    "INSERT INTO user_point_accounts (user_id, balance) VALUES (%s, %s)",
+                    (order["user_id"], new_balance),
+                )
+
+            cursor.execute(
+                """
+                INSERT INTO user_point_ledger (user_id, change_amount, balance_after, source_type, source_order_no, remark)
+                VALUES (%s, %s, %s, 'topup', %s, %s)
+                """,
+                (order["user_id"], int(order["points_amount"]), new_balance, order_no, order["product_code"]),
+            )
+            cursor.execute("SELECT * FROM point_topup_orders WHERE order_no = %s LIMIT 1", (order_no,))
+            updated_order = cursor.fetchone()
+        conn.commit()
+        return updated_order
+    finally:
+        conn.close()
+
+
+def redeem_store_product(user_id: int, product_code: str) -> dict:
+    product = get_store_product(product_code)
+    if not product:
+        raise ValueError("Invalid product")
+
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT entitlement_code, entitlement_type, source_product_code, status, expires_at, payload_json
+                FROM user_entitlements
+                WHERE user_id = %s AND source_product_code = %s AND status = 'active'
+                LIMIT 1 FOR UPDATE
+                """,
+                (user_id, product_code),
+            )
+            existing = cursor.fetchone()
+            if existing:
+                payload = existing.get("payload_json")
+                if isinstance(payload, str):
+                    payload = json.loads(payload)
+                return {
+                    "points_balance": get_user_points_balance(user_id),
+                    "entitlement": {
+                        "entitlement_code": existing["entitlement_code"],
+                        "entitlement_type": existing["entitlement_type"],
+                        "source_product_code": existing["source_product_code"],
+                        "status": existing["status"],
+                        "expires_at": existing["expires_at"],
+                        "payload": payload if isinstance(payload, dict) else {},
+                    },
+                }
+
+            cursor.execute("SELECT balance FROM user_point_accounts WHERE user_id = %s LIMIT 1 FOR UPDATE", (user_id,))
+            account = cursor.fetchone()
+            current_balance = int(account["balance"]) if account else 0
+            if current_balance < int(product["point_price"]):
+                raise ValueError("Insufficient points")
+
+            new_balance = current_balance - int(product["point_price"])
+            if account:
+                cursor.execute("UPDATE user_point_accounts SET balance = %s WHERE user_id = %s", (new_balance, user_id))
+            else:
+                cursor.execute("INSERT INTO user_point_accounts (user_id, balance) VALUES (%s, %s)", (user_id, new_balance))
+
+            entitlement_code = f"{product['product_type'].replace('_item', '')}.{product['asset_key'].replace('/', '.')}"
+            payload_json = json.dumps(
+                {
+                    "asset_key": product["asset_key"],
+                    "asset_version": product["asset_version"],
+                },
+                ensure_ascii=False,
+            )
+            cursor.execute(
+                """
+                INSERT INTO user_entitlements (user_id, entitlement_code, entitlement_type, source_product_code, status, expires_at, payload_json)
+                VALUES (%s, %s, 'permanent', %s, 'active', NULL, %s)
+                """,
+                (user_id, entitlement_code, product_code, payload_json),
+            )
+            cursor.execute(
+                """
+                INSERT INTO user_point_ledger (user_id, change_amount, balance_after, source_type, source_order_no, remark)
+                VALUES (%s, %s, %s, 'redeem', NULL, %s)
+                """,
+                (user_id, -int(product["point_price"]), new_balance, product_code),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    entitlements = list_user_entitlements(user_id)
+    matched = next(item for item in entitlements if item["source_product_code"] == product_code)
+    return {"points_balance": new_balance, "entitlement": matched}
 
 
 def list_user_entitlements(user_id: int) -> list[dict]:
@@ -618,6 +1074,49 @@ def list_user_entitlements(user_id: int) -> list[dict]:
             }
         )
     return entitlements
+
+
+def get_download_manifest_for_user_product(user_id: int, product_code: str) -> dict:
+    entitlements = list_user_entitlements(user_id)
+    owned = next((item for item in entitlements if item["source_product_code"] == product_code), None)
+    if not owned:
+        raise PermissionError("Product not owned")
+
+    payload = owned.get("payload") or {}
+    asset_key = str(payload.get("asset_key") or "")
+    manifest = REMOTE_ASSET_MANIFEST_DEFINITIONS.get(asset_key)
+    if not manifest:
+        raise ValueError("Asset manifest not found")
+
+    return {"product_code": product_code, **manifest}
+
+
+def build_asset_download_manifest(product_code: str, public_base_url: str) -> dict:
+    product = get_asset_catalog_product(product_code)
+    if not product:
+        raise ValueError("Invalid product")
+
+    manifest = REMOTE_ASSET_MANIFEST_DEFINITIONS.get(product["asset_key"])
+    if not manifest:
+        raise ValueError("Asset manifest not found")
+
+    normalized_base_url = (public_base_url or "").rstrip("/")
+    asset_version = str(manifest.get("asset_version") or product["asset_version"])
+    kind = _catalog_kind_for_product(product) or "assets"
+    if kind == "avatar":
+        relative_zip_path = f"/static-assets/avatars/{product_code}/{asset_version}.zip"
+    else:
+        relative_zip_path = f"/static-assets/dances/{product_code}/{asset_version}.zip"
+
+    return {
+        "product_code": product_code,
+        "asset_key": manifest["asset_key"],
+        "asset_version": asset_version,
+        "asset_hash": manifest["asset_hash"],
+        "asset_size": int(manifest["asset_size"]),
+        "download_url": f"{normalized_base_url}{relative_zip_path}",
+        "files": list(manifest.get("files") or []),
+    }
 
 
 def create_payment_order(user_id: int, plan_code: str, pay_channel: str, wechat_code_url: str | None = None, wechat_prepay_id: str | None = None) -> dict:

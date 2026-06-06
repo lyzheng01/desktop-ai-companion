@@ -7,9 +7,14 @@ import re
 import shutil
 import sys
 import json
-from datetime import datetime
+import base64
+import hashlib
+import hmac
+from io import BytesIO
+from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
+from urllib.parse import quote
 from xml.etree import ElementTree
 
 import httpx
@@ -28,8 +33,9 @@ DEFAULT_TTS_SERVER_BASE_URL = os.getenv("DESKTOP_AI_COMPANION_TTS_SERVER_URL", "
 
 from fastapi import FastAPI, HTTPException, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 from pydantic import BaseModel, Field, field_validator
 from typing import List
 import uvicorn
@@ -67,28 +73,41 @@ from backend.auth_utils import (
     verify_access_token,
 )
 from backend.business_store import (
+    build_asset_download_manifest,
+    create_point_topup_order,
     create_user_with_password,
     create_payment_order,
     create_sms_code,
     create_user_session,
+    deduct_points_for_asset_product,
     delete_session_by_refresh_token_hash,
+    get_download_manifest_for_user_product,
+    get_asset_catalog_product,
+    get_point_topup_order,
+    get_point_topup_product,
     get_or_create_user_by_phone,
     get_payment_order,
     get_plan,
+    list_point_topup_products,
     get_session_by_refresh_token_hash,
     get_user_by_phone,
     get_user_by_id,
     get_user_membership,
+    get_user_points_balance,
     init_business_tables,
+    list_asset_catalog_products,
     list_membership_plans,
     list_store_products,
     list_user_entitlements,
+    mark_point_topup_order_paid,
     mark_order_paid,
     mysql_is_configured,
     now_utc,
+    redeem_store_product,
     set_user_password,
     store_payment_callback,
     consume_sms_code,
+    update_point_topup_order_provider_fields,
     update_payment_order_provider_fields,
 )
 from backend.provider_services import (
@@ -100,6 +119,7 @@ from backend.provider_services import (
     send_login_sms,
     verify_sms_captcha,
 )
+from backend.third_party.qrcodegen import QrCode
 from backend.passthrough_chat import iter_passthrough_live_stream, iter_passthrough_stream
 
 MODEL_CATALOG = [
@@ -549,6 +569,7 @@ class EntitlementResponse(BaseModel):
 class MeResponse(BaseModel):
     user: UserResponse
     membership: MembershipResponse
+    points_balance: int = 0
     entitlements: list[EntitlementResponse] = Field(default_factory=list)
 
 
@@ -565,10 +586,29 @@ class StoreProductResponse(BaseModel):
     product_code: str
     product_name: str
     product_type: str
-    cash_price_fen: int
     point_price: int
     status: str
+    asset_key: str
+    asset_version: str
     payload: dict[str, object] = Field(default_factory=dict)
+
+
+class PointTopupProductResponse(BaseModel):
+    product_code: str
+    product_name: str
+    points_amount: int
+    price_fen: int
+    status: str
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
+class CreatePointTopupOrderRequest(BaseModel):
+    product_code: str | None = None
+    quantity: int | None = None
+
+
+class WechatQrCodeRenderRequest(BaseModel):
+    code_url: str
 
 
 class CreateWechatOrderRequest(BaseModel):
@@ -582,6 +622,78 @@ class PaymentOrderResponse(BaseModel):
     status: str
     pay_channel: str
     code_url: str | None = None
+    payment_page_url: str | None = None
+    paid_at: datetime | None = None
+
+
+class PointTopupOrderResponse(BaseModel):
+    order_no: str
+    product_code: str
+    amount_fen: int
+    status: str
+    pay_channel: str
+    code_url: str | None = None
+    payment_page_url: str | None = None
+    paid_at: datetime | None = None
+
+
+class PointsRedeemRequest(BaseModel):
+    product_code: str
+
+
+class PointsRedeemResponse(BaseModel):
+    points_balance: int
+    entitlement: EntitlementResponse
+
+
+class AssetFileEntryResponse(BaseModel):
+    path: str
+    size: int
+
+
+class AssetDownloadManifestResponse(BaseModel):
+    product_code: str
+    asset_key: str
+    asset_version: str
+    asset_hash: str
+    asset_size: int
+    download_url: str
+    files: list[AssetFileEntryResponse] = Field(default_factory=list)
+
+
+class AssetCatalogProductResponse(BaseModel):
+    product_code: str
+    product_name: str
+    product_type: str
+    point_price: int
+    status: str
+    asset_key: str
+    asset_version: str
+    cover_url: str | None = None
+    payload: dict[str, object] = Field(default_factory=dict)
+
+
+class AssetAcquireRequest(BaseModel):
+    product_code: str
+    retry_token: str | None = None
+
+
+class AssetAcquireResponse(BaseModel):
+    points_balance: int
+    retry_token: str | None = None
+    retry_token_expires_at: datetime | None = None
+    manifest: AssetDownloadManifestResponse
+
+
+class PointTopupPublicStatusResponse(BaseModel):
+    order_no: str
+    status: str
+    paid_at: datetime | None = None
+
+
+class PaymentOrderPublicStatusResponse(BaseModel):
+    order_no: str
+    status: str
     paid_at: datetime | None = None
 
 
@@ -859,6 +971,408 @@ def get_current_user(authorization: str | None) -> dict:
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
     return user
+
+
+def get_public_base_url(request: Request | None = None) -> str:
+    configured = os.getenv("DESKTOP_AI_COMPANION_PUBLIC_BASE_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    if request is not None:
+        return str(request.base_url).rstrip("/")
+    return "http://127.0.0.1:8080"
+
+
+def get_local_token_secret() -> bytes:
+    value = os.getenv("DESKTOP_AI_COMPANION_LOCAL_TOKEN_SECRET", "").strip() or "desktop-ai-companion-local-token-secret"
+    return value.encode("utf-8")
+
+
+def sign_local_token(payload: dict, expires_in_seconds: int) -> str:
+    issued_at = now_utc()
+    data = dict(payload)
+    data["exp"] = int((issued_at + timedelta(seconds=expires_in_seconds)).timestamp())
+    body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    signature = hmac.new(get_local_token_secret(), body, hashlib.sha256).hexdigest().encode("ascii")
+    return base64.urlsafe_b64encode(body + b"." + signature).decode("ascii")
+
+
+def verify_local_token(token: str) -> dict:
+    try:
+        raw = base64.urlsafe_b64decode((token or "").encode("ascii"))
+        body, signature = raw.rsplit(b".", 1)
+    except Exception as error:
+        raise HTTPException(status_code=403, detail="Invalid token") from error
+
+    expected_signature = hmac.new(get_local_token_secret(), body, hashlib.sha256).hexdigest().encode("ascii")
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except Exception as error:
+        raise HTTPException(status_code=403, detail="Invalid token") from error
+
+    expires_at = int(payload.get("exp") or 0)
+    if expires_at <= int(now_utc().timestamp()):
+        raise HTTPException(status_code=403, detail="Token expired")
+    return payload
+
+
+def build_point_topup_payment_page_url(order_no: str, user_id: int, request: Request | None = None) -> str:
+    token = sign_local_token(
+        {"type": "point_topup_status", "order_no": order_no, "user_id": int(user_id)},
+        24 * 60 * 60,
+    )
+    return f"{get_public_base_url(request)}/payments/points/{quote(order_no)}?token={quote(token)}"
+
+
+def build_membership_payment_page_url(order_no: str, user_id: int, request: Request | None = None) -> str:
+    token = sign_local_token(
+        {"type": "membership_status", "order_no": order_no, "user_id": int(user_id)},
+        24 * 60 * 60,
+    )
+    return f"{get_public_base_url(request)}/payments/billing/{quote(order_no)}?token={quote(token)}"
+
+
+def build_point_topup_payment_page_context(order_no: str) -> dict:
+    order = get_point_topup_order(order_no)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    product = get_point_topup_product(str(order["product_code"])) or {}
+    return {
+        "order_no": order["order_no"],
+        "product_name": product.get("product_name") or str(order["product_code"]),
+        "amount_fen": int(order["amount_fen"]),
+        "code_url": order.get("wechat_code_url") or "",
+        "status": str(order.get("status") or "pending"),
+    }
+
+
+def resolve_point_topup_checkout(payload: CreatePointTopupOrderRequest) -> dict:
+    if payload.quantity is not None:
+        quantity = int(payload.quantity)
+        if quantity < 1 or quantity > 999:
+            raise HTTPException(status_code=400, detail="quantity must be between 1 and 999")
+        return {
+            "product_code": "points_quantity_topup",
+            "product_name": f"Mate-Engine 积分 x {quantity * 100}",
+            "points_amount": quantity * 100,
+            "amount_fen": quantity * 100,
+        }
+
+    product_code = str(payload.product_code or "").strip()
+    if not product_code:
+        raise HTTPException(status_code=400, detail="product_code or quantity is required")
+
+    product = get_point_topup_product(product_code)
+    if not product:
+        raise HTTPException(status_code=400, detail="Invalid point topup product")
+
+    return {
+        "product_code": product["product_code"],
+        "product_name": product["product_name"],
+        "points_amount": int(product["points_amount"]),
+        "amount_fen": int(product["price_fen"]),
+    }
+
+
+def render_wechat_qrcode_png(code_url: str) -> bytes:
+    normalized = str(code_url or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="code_url is required")
+
+    qr = QrCode.encode_text(normalized, QrCode.Ecc.MEDIUM)
+    border = 4
+    scale = 8
+    module_count = qr.get_size()
+    image_size = (module_count + border * 2) * scale
+    image = Image.new("RGB", (image_size, image_size), "white")
+
+    for y in range(module_count):
+        for x in range(module_count):
+            if not qr.get_module(x, y):
+                continue
+
+            start_x = (x + border) * scale
+            start_y = (y + border) * scale
+            for py in range(start_y, start_y + scale):
+                for px in range(start_x, start_x + scale):
+                    image.putpixel((px, py), (0, 0, 0))
+
+    buffer = BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def build_membership_payment_page_context(order_no: str) -> dict:
+    order = get_payment_order(order_no)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+    plan = get_plan(str(order["plan_code"])) or {}
+    return {
+        "order_no": order["order_no"],
+        "product_name": plan.get("plan_name") or str(order["plan_code"]),
+        "amount_fen": int(order["amount_fen"]),
+        "code_url": order.get("wechat_code_url") or "",
+        "status": str(order.get("status") or "pending"),
+    }
+
+
+def get_point_topup_public_status(order_no: str, token: str) -> dict:
+    payload = verify_local_token(token)
+    if payload.get("type") != "point_topup_status" or str(payload.get("order_no") or "") != order_no:
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    order = get_point_topup_order(order_no)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    return {
+        "order_no": order["order_no"],
+        "status": str(order.get("status") or "pending"),
+        "paid_at": order.get("paid_at"),
+    }
+
+
+def get_membership_public_status(order_no: str, token: str) -> dict:
+    payload = verify_local_token(token)
+    if payload.get("type") != "membership_status" or str(payload.get("order_no") or "") != order_no:
+        raise HTTPException(status_code=403, detail="Invalid token")
+
+    order = get_payment_order(order_no)
+    if not order:
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    return {
+        "order_no": order["order_no"],
+        "status": str(order.get("status") or "pending"),
+        "paid_at": order.get("paid_at"),
+    }
+
+
+def acquire_remote_asset_for_user(
+    user_id: int,
+    product_code: str,
+    retry_token: str | None = None,
+    public_base_url: str = "http://127.0.0.1:8080",
+) -> dict:
+    normalized_retry_token = (retry_token or "").strip()
+    if normalized_retry_token:
+        payload = verify_local_token(normalized_retry_token)
+        if (
+            payload.get("type") != "remote_asset_retry"
+            or int(payload.get("user_id") or 0) != int(user_id)
+            or str(payload.get("product_code") or "") != product_code
+        ):
+            raise HTTPException(status_code=403, detail="Invalid retry token")
+
+        manifest = build_asset_download_manifest(product_code, public_base_url)
+        return {
+            "points_balance": get_user_points_balance(int(user_id)),
+            "retry_token": normalized_retry_token,
+            "retry_token_expires_at": datetime.fromtimestamp(int(payload["exp"])),
+            "manifest": manifest,
+        }
+
+    points_balance = deduct_points_for_asset_product(int(user_id), product_code)
+    manifest = build_asset_download_manifest(product_code, public_base_url)
+    new_retry_token = sign_local_token(
+        {"type": "remote_asset_retry", "user_id": int(user_id), "product_code": product_code},
+        24 * 60 * 60,
+    )
+    retry_payload = verify_local_token(new_retry_token)
+    return {
+        "points_balance": points_balance,
+        "retry_token": new_retry_token,
+        "retry_token_expires_at": datetime.fromtimestamp(int(retry_payload["exp"])),
+        "manifest": manifest,
+    }
+
+
+def build_point_topup_payment_page_html(context: dict, status_path: str) -> str:
+    order_no = json.dumps(str(context.get("order_no") or ""))
+    product_name = json.dumps(str(context.get("product_name") or ""))
+    amount_text = json.dumps(f"{int(context.get('amount_fen') or 0) / 100:.2f}")
+    code_url = json.dumps(str(context.get("code_url") or ""))
+    status_url = json.dumps(status_path)
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>积分充值</title>
+  <style>
+    body {{
+      margin: 0;
+      padding: 24px;
+      font-family: "Microsoft YaHei", sans-serif;
+      background: #f5f7fb;
+      color: #111827;
+    }}
+    .shell {{
+      width: min(100%, 520px);
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 20px;
+      padding: 24px;
+      box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+    }}
+    h1 {{ margin: 0 0 8px; font-size: 24px; }}
+    .meta {{ color: #6b7280; line-height: 1.8; margin-bottom: 18px; }}
+    .qr {{
+      width: 100%;
+      min-height: 160px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px dashed #cbd5e1;
+      border-radius: 16px;
+      background: #f8fafc;
+      padding: 20px;
+      box-sizing: border-box;
+      word-break: break-all;
+    }}
+    .status {{
+      margin-top: 16px;
+      font-size: 14px;
+      color: #2563eb;
+    }}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <h1>微信扫码充值</h1>
+    <div class="meta">
+      <div>订单号：<span id="order-no"></span></div>
+      <div>商品：<span id="product-name"></span></div>
+      <div>金额：￥<span id="amount-text"></span></div>
+    </div>
+    <div class="qr" id="qr-box"></div>
+    <div class="status" id="status-text">等待支付...</div>
+  </main>
+  <script>
+    const orderNo = {order_no};
+    const productName = {product_name};
+    const amountText = {amount_text};
+    const codeUrl = {code_url};
+    const statusUrl = {status_url};
+    document.getElementById("order-no").textContent = orderNo;
+    document.getElementById("product-name").textContent = productName;
+    document.getElementById("amount-text").textContent = amountText;
+    document.getElementById("qr-box").textContent = codeUrl || "未获取到微信支付二维码链接";
+
+    async function refreshStatus() {{
+      try {{
+        const response = await fetch(statusUrl, {{ cache: "no-store" }});
+        const data = await response.json();
+        if (data.status === "paid") {{
+          document.getElementById("status-text").textContent = "支付成功，可以回到应用刷新积分余额。";
+          return;
+        }}
+        document.getElementById("status-text").textContent = "等待支付...";
+      }} catch (error) {{
+        document.getElementById("status-text").textContent = "状态查询失败，请稍后重试。";
+      }}
+      window.setTimeout(refreshStatus, 2000);
+    }}
+
+    refreshStatus();
+  </script>
+</body>
+</html>"""
+
+
+def build_membership_payment_page_html(context: dict, status_path: str) -> str:
+    order_no = json.dumps(str(context.get("order_no") or ""))
+    product_name = json.dumps(str(context.get("product_name") or ""))
+    amount_text = json.dumps(f"{int(context.get('amount_fen') or 0) / 100:.2f}")
+    code_url = json.dumps(str(context.get("code_url") or ""))
+    status_url = json.dumps(status_path)
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>会员开通</title>
+  <style>
+    body {{
+      margin: 0;
+      padding: 24px;
+      font-family: "Microsoft YaHei", sans-serif;
+      background: #f5f7fb;
+      color: #111827;
+    }}
+    .shell {{
+      width: min(100%, 520px);
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 20px;
+      padding: 24px;
+      box-shadow: 0 20px 60px rgba(15, 23, 42, 0.12);
+    }}
+    h1 {{ margin: 0 0 8px; font-size: 24px; }}
+    .meta {{ color: #6b7280; line-height: 1.8; margin-bottom: 18px; }}
+    .qr {{
+      width: 100%;
+      min-height: 160px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px dashed #cbd5e1;
+      border-radius: 16px;
+      background: #f8fafc;
+      padding: 20px;
+      box-sizing: border-box;
+      word-break: break-all;
+    }}
+    .status {{
+      margin-top: 16px;
+      font-size: 14px;
+      color: #2563eb;
+    }}
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <h1>微信扫码开通会员</h1>
+    <div class="meta">
+      <div>订单号：<span id="order-no"></span></div>
+      <div>方案：<span id="product-name"></span></div>
+      <div>金额：￥<span id="amount-text"></span></div>
+    </div>
+    <div class="qr" id="qr-box"></div>
+    <div class="status" id="status-text">等待支付...</div>
+  </main>
+  <script>
+    const orderNo = {order_no};
+    const productName = {product_name};
+    const amountText = {amount_text};
+    const codeUrl = {code_url};
+    const statusUrl = {status_url};
+    document.getElementById("order-no").textContent = orderNo;
+    document.getElementById("product-name").textContent = productName;
+    document.getElementById("amount-text").textContent = amountText;
+    document.getElementById("qr-box").textContent = codeUrl || "未获取到微信支付二维码链接";
+
+    async function refreshStatus() {{
+      try {{
+        const response = await fetch(statusUrl, {{ cache: "no-store" }});
+        const data = await response.json();
+        if (data.status === "paid") {{
+          document.getElementById("status-text").textContent = "支付成功，可以回到应用刷新会员状态。";
+          return;
+        }}
+        document.getElementById("status-text").textContent = "等待支付...";
+      }} catch (error) {{
+        document.getElementById("status-text").textContent = "状态查询失败，请稍后重试。";
+      }}
+      window.setTimeout(refreshStatus, 2000);
+    }}
+
+    refreshStatus();
+  </script>
+</body>
+</html>"""
 
 
 def needs_live_search(message: str) -> bool:
@@ -1502,12 +2016,17 @@ PUBLIC_RELEASE_DIR = Path(
 if not PUBLIC_RELEASE_DIR.exists():
     PUBLIC_RELEASE_DIR = PROJECT_ROOT / "docs" / "releases"
 PUBLIC_RELEASE_DIR.mkdir(parents=True, exist_ok=True)
+STATIC_ASSETS_DIR = Path(
+    os.getenv("DESKTOP_AI_COMPANION_STATIC_ASSETS_DIR", str(Path(__file__).resolve().parent / "static_assets"))
+).expanduser().resolve()
+STATIC_ASSETS_DIR.mkdir(parents=True, exist_ok=True)
 
 app.mount("/live2d/imported", StaticFiles(directory=get_imported_models_dir()), name="imported-live2d")
 app.mount("/model-previews/imported", StaticFiles(directory=get_imported_preview_dir()), name="imported-previews")
 app.mount("/live2d", StaticFiles(directory=BUILTIN_LIVE2D_DIR), name="builtin-live2d")
 app.mount("/model-previews/builtin", StaticFiles(directory=BUILTIN_PREVIEW_DIR), name="builtin-previews")
 app.mount("/desktop-ai-companion", StaticFiles(directory=PUBLIC_RELEASE_DIR), name="desktop-ai-companion-public")
+app.mount("/static-assets", StaticFiles(directory=STATIC_ASSETS_DIR), name="desktop-ai-companion-static-assets")
 
 
 @app.on_event("startup")
@@ -1647,19 +2166,177 @@ async def logout_endpoint(payload: LogoutRequest):
 async def me_endpoint(authorization: str | None = Header(default=None)):
     user = get_current_user(authorization)
     membership = get_user_membership(int(user["id"]))
+    points_balance = get_user_points_balance(int(user["id"]))
     entitlements = list_user_entitlements(int(user["id"]))
     return MeResponse(
         user=build_user_response(user),
         membership=build_membership_response(membership),
+        points_balance=points_balance,
         entitlements=[EntitlementResponse(**item) for item in entitlements],
     )
 
 
-@app.get("/store/products", response_model=list[StoreProductResponse])
+@app.get("/assets/catalog", response_model=list[AssetCatalogProductResponse])
+async def list_asset_catalog_endpoint(kind: str | None = None):
+    ensure_business_ready()
+    products = list_asset_catalog_products(kind)
+    return [AssetCatalogProductResponse(**item) for item in products]
+
+
+@app.post("/assets/acquire", response_model=AssetAcquireResponse)
+async def acquire_asset_endpoint(
+    payload: AssetAcquireRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    user = get_current_user(authorization)
+    try:
+        result = acquire_remote_asset_for_user(
+            int(user["id"]),
+            payload.product_code,
+            payload.retry_token,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    return AssetAcquireResponse(
+        points_balance=int(result["points_balance"]),
+        retry_token=result.get("retry_token"),
+        retry_token_expires_at=result.get("retry_token_expires_at"),
+        manifest=AssetDownloadManifestResponse(**result["manifest"]),
+    )
+
+
+@app.get("/store/products", response_model=list[MembershipPlanResponse])
 async def list_store_products_endpoint():
     ensure_business_ready()
-    products = list_store_products()
-    return [StoreProductResponse(**product) for product in products]
+    plans = list_membership_plans()
+    return [
+        MembershipPlanResponse(**plan)
+        for plan in plans
+        if plan["plan_code"] != "free"
+    ]
+
+
+@app.get("/points/topup-products", response_model=list[PointTopupProductResponse])
+async def get_point_topup_products_endpoint():
+    ensure_business_ready()
+    products = list_point_topup_products()
+    return [PointTopupProductResponse(**product) for product in products]
+
+
+@app.post("/points/topup-orders/wechat-native", response_model=PointTopupOrderResponse)
+async def create_point_topup_order_endpoint(
+    payload: CreatePointTopupOrderRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
+    user = get_current_user(authorization)
+    checkout = resolve_point_topup_checkout(payload)
+
+    order = create_point_topup_order(
+        user_id=int(user["id"]),
+        product_code=checkout["product_code"],
+        pay_channel="wechat_native",
+        points_amount=int(checkout["points_amount"]),
+        amount_fen=int(checkout["amount_fen"]),
+    )
+
+    try:
+        payment = create_wechat_native_payment(
+            order_no=order["order_no"],
+            amount_fen=int(checkout["amount_fen"]),
+            description=str(checkout["product_name"]),
+        )
+    except NotImplementedError as error:
+        raise HTTPException(status_code=501, detail=str(error)) from error
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"Create WeChat payment failed: {error}") from error
+
+    order = update_point_topup_order_provider_fields(
+        order_no=order["order_no"],
+        wechat_code_url=payment.get("code_url"),
+        wechat_prepay_id=payment.get("prepay_id"),
+    ) or order
+    return PointTopupOrderResponse(
+        order_no=order["order_no"],
+        product_code=order["product_code"],
+        amount_fen=int(order["amount_fen"]),
+        status=order["status"],
+        pay_channel=order["pay_channel"],
+        code_url=order.get("wechat_code_url"),
+        payment_page_url=build_point_topup_payment_page_url(order["order_no"], int(user["id"])),
+        paid_at=order.get("paid_at"),
+    )
+
+
+@app.post("/payments/wechat/qrcode")
+async def render_wechat_qrcode_endpoint(payload: WechatQrCodeRenderRequest):
+    return Response(content=render_wechat_qrcode_png(payload.code_url), media_type="image/png")
+
+
+@app.get("/points/topup-orders/{order_no}", response_model=PointTopupOrderResponse)
+async def get_point_topup_order_endpoint(order_no: str, authorization: str | None = Header(default=None)):
+    user = get_current_user(authorization)
+    order = get_point_topup_order(order_no)
+    if not order or int(order["user_id"]) != int(user["id"]):
+        raise HTTPException(status_code=404, detail="Order not found")
+    return PointTopupOrderResponse(
+        order_no=order["order_no"],
+        product_code=order["product_code"],
+        amount_fen=int(order["amount_fen"]),
+        status=order["status"],
+        pay_channel=order["pay_channel"],
+        code_url=order.get("wechat_code_url"),
+        payment_page_url=None,
+        paid_at=order.get("paid_at"),
+    )
+
+
+@app.get("/payments/points/{order_no}", response_class=HTMLResponse)
+async def point_topup_payment_page(order_no: str, token: str | None = None):
+    ensure_business_ready()
+    context = build_point_topup_payment_page_context(order_no)
+    status_path = context.get("status_path")
+    if not status_path:
+        normalized_token = (token or "").strip()
+        if normalized_token:
+            status_path = f"/payments/points/{quote(order_no)}/status?token={quote(normalized_token)}"
+        else:
+            status_path = f"/payments/points/{quote(order_no)}/status"
+    return HTMLResponse(build_point_topup_payment_page_html(context, str(status_path)))
+
+
+@app.get("/payments/points/{order_no}/status", response_model=PointTopupPublicStatusResponse)
+async def point_topup_payment_status(order_no: str, token: str):
+    ensure_business_ready()
+    return PointTopupPublicStatusResponse(**get_point_topup_public_status(order_no, token))
+
+
+@app.post("/points/redeem", response_model=PointsRedeemResponse)
+async def redeem_points_endpoint(payload: PointsRedeemRequest, authorization: str | None = Header(default=None)):
+    user = get_current_user(authorization)
+    try:
+        result = redeem_store_product(int(user["id"]), payload.product_code)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+
+    return PointsRedeemResponse(
+        points_balance=int(result["points_balance"]),
+        entitlement=EntitlementResponse(**result["entitlement"]),
+    )
+
+
+@app.get("/assets/download-manifest/{product_code}", response_model=AssetDownloadManifestResponse)
+async def get_download_manifest_endpoint(product_code: str, authorization: str | None = Header(default=None)):
+    user = get_current_user(authorization)
+    try:
+        manifest = get_download_manifest_for_user_product(int(user["id"]), product_code)
+    except PermissionError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    return AssetDownloadManifestResponse(**manifest)
 
 
 @app.get("/billing/plans", response_model=list[MembershipPlanResponse])
@@ -1705,6 +2382,7 @@ async def create_wechat_native_order_endpoint(payload: CreateWechatOrderRequest,
         status=order["status"],
         pay_channel=order["pay_channel"],
         code_url=order.get("wechat_code_url"),
+        payment_page_url=build_membership_payment_page_url(order["order_no"], int(user["id"])),
         paid_at=order.get("paid_at"),
     )
 
@@ -1722,8 +2400,27 @@ async def get_order_status_endpoint(order_no: str, authorization: str | None = H
         status=order["status"],
         pay_channel=order["pay_channel"],
         code_url=order.get("wechat_code_url"),
+        payment_page_url=None,
         paid_at=order.get("paid_at"),
     )
+
+
+@app.get("/payments/billing/{order_no}", response_class=HTMLResponse)
+async def membership_payment_page(order_no: str, token: str | None = None):
+    ensure_business_ready()
+    context = build_membership_payment_page_context(order_no)
+    normalized_token = (token or "").strip()
+    if normalized_token:
+        status_path = f"/payments/billing/{quote(order_no)}/status?token={quote(normalized_token)}"
+    else:
+        status_path = f"/payments/billing/{quote(order_no)}/status"
+    return HTMLResponse(build_membership_payment_page_html(context, str(status_path)))
+
+
+@app.get("/payments/billing/{order_no}/status", response_model=PaymentOrderPublicStatusResponse)
+async def membership_payment_status(order_no: str, token: str):
+    ensure_business_ready()
+    return PaymentOrderPublicStatusResponse(**get_membership_public_status(order_no, token))
 
 
 @app.post("/payments/wechat/notify")
@@ -1745,7 +2442,10 @@ async def wechat_notify_endpoint(request: Request):
     )
     if str(callback.get("status") or "").upper() not in {"SUCCESS", "TRANSACTION.SUCCESS"}:
         return {"status": "ignored"}
-    order = mark_order_paid(str(callback["order_no"]), callback.get("transaction_id"))
+    order_no = str(callback["order_no"])
+    order = mark_order_paid(order_no, callback.get("transaction_id"))
+    if not order:
+        order = mark_point_topup_order_paid(order_no, callback.get("transaction_id"))
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     return {"code": "SUCCESS", "message": "成功"}
