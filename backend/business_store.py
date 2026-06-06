@@ -1,7 +1,13 @@
 import json
 import os
 import uuid
+import hashlib
+import re
+import struct
+import unicodedata
 from datetime import datetime, timedelta
+from pathlib import Path
+from urllib.parse import quote
 
 import pymysql
 from pymysql.cursors import DictCursor
@@ -148,6 +154,33 @@ POINT_TOPUP_PRODUCT_DEFINITIONS = [
     },
 ]
 
+STATIC_ASSET_ROOT = Path(
+    os.getenv("DESKTOP_AI_COMPANION_STATIC_ASSETS_DIR", str(Path(__file__).resolve().parent / "static_assets"))
+)
+REMOTE_ASSET_ROOT = STATIC_ASSET_ROOT / "remote-assets"
+REMOTE_ASSET_AVATAR_DIR = Path(
+    os.getenv("DESKTOP_AI_COMPANION_REMOTE_AVATAR_DIR", str(REMOTE_ASSET_ROOT / "avatars"))
+)
+REMOTE_ASSET_DANCE_DIR = Path(
+    os.getenv("DESKTOP_AI_COMPANION_REMOTE_DANCE_DIR", str(REMOTE_ASSET_ROOT / "dances"))
+)
+REMOTE_ASSET_COVER_DIR = STATIC_ASSET_ROOT / "covers"
+
+for _directory in (
+    STATIC_ASSET_ROOT,
+    REMOTE_ASSET_ROOT,
+    REMOTE_ASSET_AVATAR_DIR,
+    REMOTE_ASSET_DANCE_DIR,
+    REMOTE_ASSET_COVER_DIR,
+):
+    _directory.mkdir(parents=True, exist_ok=True)
+
+DEFAULT_REMOTE_AVATAR_FILENAMES = {"HatsuneMikuNT.vrm"}
+DEFAULT_REMOTE_DANCE_FILENAMES = {
+    "MMD-Ageage Again.unity3d",
+    "MMD-World is Mine.unity3d",
+}
+
 
 def mysql_is_configured() -> bool:
     return all(
@@ -178,6 +211,268 @@ def get_mysql_connection() -> pymysql.connections.Connection:
 
 def now_utc() -> datetime:
     return datetime.utcnow()
+
+
+def _slugify_filename(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value or "")
+    ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_text).strip("-").lower()
+    return slug or "asset"
+
+
+def _compute_file_sha256(path: Path) -> str:
+    sha256 = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(1024 * 1024)
+            if not chunk:
+                break
+            sha256.update(chunk)
+    return sha256.hexdigest()
+
+
+def _get_remote_asset_cover_dir() -> Path:
+    cover_dir = Path(os.getenv("DESKTOP_AI_COMPANION_REMOTE_COVER_DIR", str(STATIC_ASSET_ROOT / "covers")))
+    cover_dir.mkdir(parents=True, exist_ok=True)
+    return cover_dir
+
+
+def _read_glb_json_and_binary_chunks(path: Path) -> tuple[dict, bytes] | tuple[None, None]:
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(12)
+            if len(header) != 12:
+                return None, None
+
+            magic, version, _ = struct.unpack("<III", header)
+            if magic != 0x46546C67 or version != 2:
+                return None, None
+
+            json_chunk_header = handle.read(8)
+            if len(json_chunk_header) != 8:
+                return None, None
+
+            json_chunk_length, json_chunk_type = struct.unpack("<II", json_chunk_header)
+            if json_chunk_type != 0x4E4F534A:
+                return None, None
+
+            json_document = json.loads(handle.read(json_chunk_length).decode("utf-8"))
+            binary_chunk = b""
+
+            binary_chunk_header = handle.read(8)
+            if len(binary_chunk_header) == 8:
+                binary_chunk_length, binary_chunk_type = struct.unpack("<II", binary_chunk_header)
+                if binary_chunk_type == 0x004E4942:
+                    binary_chunk = handle.read(binary_chunk_length)
+
+            return json_document, binary_chunk
+    except (OSError, ValueError, UnicodeDecodeError, json.JSONDecodeError, struct.error):
+        return None, None
+
+
+def _extract_vrm_embedded_cover(path: Path, *, product_code: str, covers_dir: Path) -> Path | None:
+    document, binary_chunk = _read_glb_json_and_binary_chunks(path)
+    if not document or not binary_chunk:
+        return None
+
+    extensions = document.get("extensions") or {}
+    vrm_meta = (extensions.get("VRM") or {}).get("meta") or {}
+    vrmc_meta = (extensions.get("VRMC_vrm") or {}).get("meta") or {}
+
+    image_index = vrm_meta.get("texture")
+    if image_index is None:
+        image_index = vrmc_meta.get("thumbnailImage")
+
+    images = document.get("images") or []
+    textures = document.get("textures") or []
+    buffer_views = document.get("bufferViews") or []
+
+    if "texture" in vrm_meta and isinstance(image_index, int):
+        if image_index < 0 or image_index >= len(textures):
+            return None
+        image_index = (textures[image_index] or {}).get("source")
+
+    if not isinstance(image_index, int) or image_index < 0 or image_index >= len(images):
+        return None
+
+    image_entry = images[image_index] or {}
+    buffer_view_index = image_entry.get("bufferView")
+    mime_type = str(image_entry.get("mimeType") or "").lower()
+
+    if not isinstance(buffer_view_index, int) or buffer_view_index < 0 or buffer_view_index >= len(buffer_views):
+        return None
+
+    buffer_view = buffer_views[buffer_view_index] or {}
+    byte_offset = int(buffer_view.get("byteOffset") or 0)
+    byte_length = int(buffer_view.get("byteLength") or 0)
+    if byte_length <= 0:
+        return None
+
+    image_bytes = binary_chunk[byte_offset : byte_offset + byte_length]
+    if not image_bytes:
+        return None
+
+    suffix = ".jpg" if mime_type == "image/jpeg" else ".png"
+    covers_dir.mkdir(parents=True, exist_ok=True)
+    destination = covers_dir / f"{product_code}{suffix}"
+    try:
+        destination.write_bytes(image_bytes)
+    except OSError:
+        return None
+    return destination
+
+
+def _ensure_remote_asset_cover(path: Path, *, product_code: str, kind: str) -> str:
+    if kind != "avatar" or path.suffix.lower() != ".vrm":
+        return ""
+
+    cover_path = _extract_vrm_embedded_cover(path, product_code=product_code, covers_dir=_get_remote_asset_cover_dir())
+    if cover_path is None:
+        return ""
+
+    try:
+        relative_path = cover_path.relative_to(STATIC_ASSET_ROOT).as_posix()
+    except ValueError:
+        return ""
+    return f"/static-assets/{relative_path}"
+
+
+def _build_remote_asset_product(
+    path: Path,
+    *,
+    kind: str,
+    point_price: int,
+    product_type: str,
+    asset_prefix: str,
+) -> dict:
+    stat = path.stat()
+    sha256_hex = _compute_file_sha256(path)
+    stem = path.stem
+    slug = _slugify_filename(stem)
+    try:
+        relative_source_path = path.relative_to(STATIC_ASSET_ROOT).as_posix()
+    except ValueError:
+        relative_source_path = path.name
+    product_code = f"{product_type}_{slug}_{sha256_hex[:12]}"
+    asset_key = f"{asset_prefix}/{slug}-{sha256_hex[:12]}"
+    cover_url = _ensure_remote_asset_cover(path, product_code=product_code, kind=kind)
+    payload = {
+        "title": stem,
+        "source_filename": path.name,
+        "source_relative_path": relative_source_path,
+        "asset_hash": f"sha256:{sha256_hex}",
+        "asset_size": int(stat.st_size),
+        "kind": kind,
+    }
+    if cover_url:
+        payload["cover_path"] = cover_url
+    return {
+        "product_code": product_code,
+        "product_name": stem,
+        "product_type": product_type,
+        "point_price": point_price,
+        "status": "active",
+        "asset_key": asset_key,
+        "asset_version": sha256_hex[:12],
+        "cover_url": cover_url,
+        "payload": payload,
+        "_source_path": str(path),
+    }
+
+
+def _iter_remote_asset_products() -> list[dict]:
+    cached_products = _load_cached_remote_asset_products()
+    if cached_products is not None:
+        return cached_products
+
+    products: list[dict] = []
+
+    if REMOTE_ASSET_AVATAR_DIR.exists():
+        for path in sorted(REMOTE_ASSET_AVATAR_DIR.rglob("*.vrm")):
+            if path.name in DEFAULT_REMOTE_AVATAR_FILENAMES:
+                continue
+            products.append(
+                _build_remote_asset_product(
+                    path,
+                    kind="avatar",
+                    point_price=500,
+                    product_type="character_item",
+                    asset_prefix="avatars",
+                )
+            )
+
+    if REMOTE_ASSET_DANCE_DIR.exists():
+        for path in sorted(REMOTE_ASSET_DANCE_DIR.rglob("*.unity3d")):
+            if path.name in DEFAULT_REMOTE_DANCE_FILENAMES:
+                continue
+            products.append(
+                _build_remote_asset_product(
+                    path,
+                    kind="dance",
+                    point_price=100,
+                    product_type="dance_item",
+                    asset_prefix="dances",
+                )
+            )
+
+    products.sort(key=lambda item: (item["product_type"], item["product_name"].lower(), item["product_code"]))
+    _write_cached_remote_asset_products(products)
+    return products
+
+
+def _load_cached_remote_asset_products() -> list[dict] | None:
+    index_path = _get_remote_asset_index_path()
+    if not index_path.exists():
+        return None
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, list):
+        return None
+    products: list[dict] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        products.append(dict(item))
+    if _cached_remote_asset_products_need_rebuild(products):
+        return None
+    return products
+
+
+def _cached_remote_asset_products_need_rebuild(products: list[dict]) -> bool:
+    for item in products:
+        product_type = str(item.get("product_type") or "").lower()
+        payload = item.get("payload") or {}
+        source_relative_path = str(payload.get("source_relative_path") or "")
+        source_path = REMOTE_ASSET_ROOT.parent / source_relative_path if source_relative_path else None
+
+        if product_type.startswith("character") and source_path is not None and source_path.suffix.lower() == ".vrm":
+            cover_url = str(item.get("cover_url") or "").strip()
+            if not cover_url:
+                return True
+            cover_relative = cover_url.removeprefix("/static-assets/").strip("/")
+            cover_path = STATIC_ASSET_ROOT / cover_relative if cover_relative else None
+            if cover_path is None or not cover_path.exists():
+                return True
+
+    return False
+
+
+def _write_cached_remote_asset_products(products: list[dict]) -> None:
+    serializable: list[dict] = []
+    for item in products:
+        serializable.append(dict(item))
+    index_path = _get_remote_asset_index_path()
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(
+        json.dumps(serializable, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _get_remote_asset_index_path() -> Path:
+    return REMOTE_ASSET_ROOT / "catalog-index.json"
 
 
 def _parse_benefits(row: dict | None) -> dict:
@@ -667,9 +962,7 @@ def get_user_membership(user_id: int) -> dict:
 
 def list_store_products() -> list[dict]:
     products: list[dict] = []
-    for item in REMOTE_STORE_PRODUCT_DEFINITIONS:
-        if item["status"] != "active":
-            continue
+    for item in _iter_remote_asset_products():
         products.append(
             {
                 "product_code": item["product_code"],
@@ -698,9 +991,7 @@ def _catalog_kind_for_product(item: dict) -> str | None:
 def list_asset_catalog_products(kind: str | None = None) -> list[dict]:
     normalized_kind = (kind or "").strip().lower() or None
     products: list[dict] = []
-    for item in REMOTE_STORE_PRODUCT_DEFINITIONS:
-        if item["status"] != "active":
-            continue
+    for item in _iter_remote_asset_products():
         product_kind = _catalog_kind_for_product(item)
         if product_kind is None:
             continue
@@ -724,7 +1015,7 @@ def list_asset_catalog_products(kind: str | None = None) -> list[dict]:
 
 
 def get_asset_catalog_product(product_code: str) -> dict | None:
-    for item in list_asset_catalog_products():
+    for item in _iter_remote_asset_products():
         if item["product_code"] == product_code:
             return item
     return None
@@ -1084,11 +1375,10 @@ def get_download_manifest_for_user_product(user_id: int, product_code: str) -> d
 
     payload = owned.get("payload") or {}
     asset_key = str(payload.get("asset_key") or "")
-    manifest = REMOTE_ASSET_MANIFEST_DEFINITIONS.get(asset_key)
-    if not manifest:
+    product = get_asset_catalog_product(product_code)
+    if not product or product["asset_key"] != asset_key:
         raise ValueError("Asset manifest not found")
-
-    return {"product_code": product_code, **manifest}
+    return build_asset_download_manifest(product_code, os.getenv("DESKTOP_AI_COMPANION_PUBLIC_BASE_URL", "http://127.0.0.1:8080"))
 
 
 def build_asset_download_manifest(product_code: str, public_base_url: str) -> dict:
@@ -1096,26 +1386,29 @@ def build_asset_download_manifest(product_code: str, public_base_url: str) -> di
     if not product:
         raise ValueError("Invalid product")
 
-    manifest = REMOTE_ASSET_MANIFEST_DEFINITIONS.get(product["asset_key"])
-    if not manifest:
+    source_path_raw = product.get("_source_path")
+    if not source_path_raw:
         raise ValueError("Asset manifest not found")
+    source_path = Path(source_path_raw)
+    if not source_path.exists():
+        raise ValueError("Asset file not found")
 
     normalized_base_url = (public_base_url or "").rstrip("/")
-    asset_version = str(manifest.get("asset_version") or product["asset_version"])
-    kind = _catalog_kind_for_product(product) or "assets"
-    if kind == "avatar":
-        relative_zip_path = f"/static-assets/avatars/{product_code}/{asset_version}.zip"
-    else:
-        relative_zip_path = f"/static-assets/dances/{product_code}/{asset_version}.zip"
+    relative_static_path = source_path.relative_to(STATIC_ASSET_ROOT).as_posix()
+    download_relative_path = "/static-assets/" + quote(relative_static_path, safe="/-_.()")
+    stat = source_path.stat()
+    asset_hash = str(product.get("payload", {}).get("asset_hash") or "")
+    if not asset_hash:
+        asset_hash = f"sha256:{_compute_file_sha256(source_path)}"
 
     return {
         "product_code": product_code,
-        "asset_key": manifest["asset_key"],
-        "asset_version": asset_version,
-        "asset_hash": manifest["asset_hash"],
-        "asset_size": int(manifest["asset_size"]),
-        "download_url": f"{normalized_base_url}{relative_zip_path}",
-        "files": list(manifest.get("files") or []),
+        "asset_key": product["asset_key"],
+        "asset_version": str(product["asset_version"]),
+        "asset_hash": asset_hash,
+        "asset_size": int(stat.st_size),
+        "download_url": f"{normalized_base_url}{download_relative_path}",
+        "files": [{"path": source_path.name, "size": int(stat.st_size)}],
     }
 
 
