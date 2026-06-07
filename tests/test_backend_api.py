@@ -1,5 +1,6 @@
 import json
 
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 import pytest
 
@@ -39,6 +40,36 @@ def test_health_endpoint_returns_ok():
     assert response.json()["status"] == "ok"
 
 
+def test_resolve_llm_settings_prefers_env_overrides(monkeypatch):
+    monkeypatch.delenv("DESKTOP_AI_COMPANION_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("DESKTOP_AI_COMPANION_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("DESKTOP_AI_COMPANION_OPENAI_MODEL", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "env-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "deepseek-chat")
+
+    api_key, base_url, model = server_module.resolve_llm_settings(AppConfig())
+
+    assert api_key == "env-key"
+    assert base_url == "https://api.deepseek.com/v1"
+    assert model == "deepseek-chat"
+
+
+def test_resolve_llm_settings_prefers_desktop_specific_env_over_generic(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "generic-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.generic.example/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "generic-model")
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_OPENAI_API_KEY", "desktop-key")
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_OPENAI_MODEL", "deepseek-chat")
+
+    api_key, base_url, model = server_module.resolve_llm_settings(AppConfig())
+
+    assert api_key == "desktop-key"
+    assert base_url == "https://api.deepseek.com/v1"
+    assert model == "deepseek-chat"
+
+
 def test_chat_prefers_native_live_response_for_live_queries(monkeypatch):
     monkeypatch.setattr(server_module, "generate_native_live_response", lambda message, context, config: "你，今天是 2026年05月16日，星期六。")
     monkeypatch.setattr(server_module, "search_web", lambda query: (_ for _ in ()).throw(AssertionError("search_web should not be called")))
@@ -53,6 +84,31 @@ def test_passthrough_route_uses_frontend_prompt_without_persisting_user_display_
     reset_live_config(AppConfig(user_nickname="小伙伴", user_display_name="你"))
 
     captured = {}
+    monkeypatch.setattr(server_module, "ensure_business_ready", lambda: None)
+    monkeypatch.setattr(
+        server_module,
+        "get_current_user",
+        lambda authorization: {
+            "id": 101,
+            "phone": "13800138000",
+            "nickname": "owner",
+            "avatar_url": None,
+            "status": "active",
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "get_user_membership",
+        lambda user_id: {
+            "plan_code": "vip_monthly",
+            "tier": "vip",
+            "status": "active",
+            "started_at": None,
+            "expires_at": None,
+            "benefits": {"daily_message_quota": 30, "model_access_level": "vip"},
+        },
+    )
+    monkeypatch.setattr(server_module, "consume_chat_quota_or_raise", lambda user_id, membership: None, raising=False)
 
     monkeypatch.setattr(
         server_module,
@@ -89,6 +145,7 @@ def test_passthrough_route_uses_frontend_prompt_without_persisting_user_display_
             "message": "你好",
             "context": [],
         },
+        headers={"Authorization": "Bearer access-token"},
     )
 
     assert response.status_code == 200
@@ -97,6 +154,77 @@ def test_passthrough_route_uses_frontend_prompt_without_persisting_user_display_
     assert captured["json"]["messages"][0] == {"role": "system", "content": "你正在陪伴的用户叫主人。"}
     assert AppConfig.load(config_module.CONFIG_FILE).user_display_name == "你"
     assert config_module.config.user_display_name == "你"
+
+def test_passthrough_route_requires_login_before_streaming(monkeypatch):
+    monkeypatch.setattr(server_module, "ensure_business_ready", lambda: None)
+    monkeypatch.setattr(
+        server_module,
+        "iter_passthrough_stream",
+        lambda **kwargs: iter([b"event: done\ndata: {}\n\n"]),
+    )
+
+    response = client.post(
+        "/chat/stream/passthrough",
+        json={
+            "system_prompt": "persona",
+            "message": "hello",
+            "context": [],
+        },
+    )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "请先登录账号后再使用大模型对话"
+
+
+def test_passthrough_route_rejects_when_daily_quota_is_exhausted(monkeypatch):
+    monkeypatch.setattr(server_module, "ensure_business_ready", lambda: None)
+    monkeypatch.setattr(
+        server_module,
+        "get_current_user",
+        lambda authorization: {
+            "id": 101,
+            "phone": "13800138000",
+            "nickname": "owner",
+            "avatar_url": None,
+            "status": "active",
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "get_user_membership",
+        lambda user_id: {
+            "plan_code": "free",
+            "tier": "free",
+            "status": "active",
+            "started_at": None,
+            "expires_at": None,
+            "benefits": {"daily_message_quota": 10, "model_access_level": "free"},
+        },
+    )
+
+    def raise_quota_exhausted(user_id, membership):
+        raise HTTPException(status_code=403, detail="今日大模型对话次数已用完，请明天再试或开通 VIP")
+
+    monkeypatch.setattr(server_module, "consume_chat_quota_or_raise", raise_quota_exhausted, raising=False)
+    monkeypatch.setattr(
+        server_module,
+        "iter_passthrough_stream",
+        lambda **kwargs: iter([b"event: done\ndata: {}\n\n"]),
+    )
+
+    response = client.post(
+        "/chat/stream/passthrough",
+        json={
+            "system_prompt": "persona",
+            "message": "hello",
+            "context": [],
+        },
+        headers={"Authorization": "Bearer access-token"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "今日大模型对话次数已用完，请明天再试或开通 VIP"
+
 
 def test_proactive_weather_endpoint_returns_content(monkeypatch):
     monkeypatch.setattr(server_module, "build_proactive_weather_line", lambda location='合肥': f"{location}今天晴天，适合出门。")

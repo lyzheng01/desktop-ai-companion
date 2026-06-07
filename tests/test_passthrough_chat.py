@@ -91,6 +91,31 @@ def test_iter_upstream_deltas_stops_consuming_after_done_marker():
 
 
 def test_passthrough_route_skips_backend_companion_and_history(monkeypatch):
+    monkeypatch.setattr(server_module, "ensure_business_ready", lambda: None)
+    monkeypatch.setattr(
+        server_module,
+        "get_current_user",
+        lambda authorization: {
+            "id": 101,
+            "phone": "13800138000",
+            "nickname": "owner",
+            "avatar_url": None,
+            "status": "active",
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "get_user_membership",
+        lambda user_id: {
+            "plan_code": "vip_monthly",
+            "tier": "vip",
+            "status": "active",
+            "started_at": None,
+            "expires_at": None,
+            "benefits": {"daily_message_quota": 30, "model_access_level": "vip"},
+        },
+    )
+    monkeypatch.setattr(server_module, "consume_chat_quota_or_raise", lambda user_id, membership: None, raising=False)
     monkeypatch.setattr(
         server_module,
         "apply_active_companion",
@@ -132,6 +157,7 @@ def test_passthrough_route_skips_backend_companion_and_history(monkeypatch):
             "message": "hello",
             "context": [{"role": "assistant", "content": "existing"}],
         },
+        headers={"Authorization": "Bearer access-token"},
     )
 
     assert response.status_code == 200
@@ -141,6 +167,32 @@ def test_passthrough_route_skips_backend_companion_and_history(monkeypatch):
 
 
 def test_passthrough_route_streams_local_search_result_for_weather_queries(monkeypatch):
+    monkeypatch.setattr(server_module, "ensure_business_ready", lambda: None)
+    monkeypatch.setattr(
+        server_module,
+        "get_current_user",
+        lambda authorization: {
+            "id": 101,
+            "phone": "13800138000",
+            "nickname": "owner",
+            "avatar_url": None,
+            "status": "active",
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "get_user_membership",
+        lambda user_id: {
+            "plan_code": "vip_monthly",
+            "tier": "vip",
+            "status": "active",
+            "started_at": None,
+            "expires_at": None,
+            "benefits": {"daily_message_quota": 30, "model_access_level": "vip"},
+        },
+    )
+    monkeypatch.setattr(server_module, "consume_chat_quota_or_raise", lambda user_id, membership: None, raising=False)
+
     monkeypatch.setattr(server_module, "search_weather", lambda query: "合肥今天多云，25°C")
     monkeypatch.setattr(
         "backend.passthrough_chat.httpx.stream",
@@ -154,6 +206,7 @@ def test_passthrough_route_streams_local_search_result_for_weather_queries(monke
             "message": "合肥今天天气怎么样",
             "context": [{"role": "assistant", "content": "existing"}],
         },
+        headers={"Authorization": "Bearer access-token"},
     )
 
     assert response.status_code == 200
@@ -161,6 +214,70 @@ def test_passthrough_route_streams_local_search_result_for_weather_queries(monke
     assert "data: searching" in response.text
     assert "合肥今天多" in response.text
     assert "25°C" in response.text
+    assert "event: done" in response.text
+
+
+def test_passthrough_route_falls_back_to_upstream_when_weather_lookup_fails(monkeypatch):
+    monkeypatch.setattr(server_module, "ensure_business_ready", lambda: None)
+    monkeypatch.setattr(
+        server_module,
+        "get_current_user",
+        lambda authorization: {
+            "id": 101,
+            "phone": "13800138000",
+            "nickname": "owner",
+            "avatar_url": None,
+            "status": "active",
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "get_user_membership",
+        lambda user_id: {
+            "plan_code": "vip_monthly",
+            "tier": "vip",
+            "status": "active",
+            "started_at": None,
+            "expires_at": None,
+            "benefits": {"daily_message_quota": 30, "model_access_level": "vip"},
+        },
+    )
+    monkeypatch.setattr(server_module, "consume_chat_quota_or_raise", lambda user_id, membership: None, raising=False)
+    monkeypatch.setattr(server_module, "search_weather", lambda query: (_ for _ in ()).throw(ValueError("lookup failed")))
+    monkeypatch.setattr(server_module, "resolve_llm_settings", lambda config: ("key", "http://example.test/v1", "demo-model"))
+
+    class DummyResponse:
+        def raise_for_status(self):
+            return None
+
+        def iter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"改走模型回复"}}]}'
+            yield "data: [DONE]"
+
+    class DummyStream:
+        def __enter__(self):
+            return DummyResponse()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    monkeypatch.setattr("backend.passthrough_chat.httpx.stream", lambda *args, **kwargs: DummyStream())
+
+    response = client.post(
+        "/chat/stream/passthrough",
+        json={
+            "system_prompt": "frontend prompt",
+            "message": "合肥今天什么天气",
+            "context": [{"role": "assistant", "content": "existing"}],
+        },
+        headers={"Authorization": "Bearer access-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.text.count("event: state") == 1
+    assert "data: searching" in response.text
+    assert "data: composing" in response.text
+    assert "改走模型回复" in response.text
     assert "event: done" in response.text
 
 

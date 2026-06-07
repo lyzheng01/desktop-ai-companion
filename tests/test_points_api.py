@@ -214,6 +214,60 @@ def test_wechat_notify_endpoint_marks_point_topup_order_paid_when_membership_ord
     assert response.json()["code"] == "SUCCESS"
 
 
+def test_get_point_topup_order_endpoint_refreshes_pending_wechat_order(monkeypatch):
+    monkeypatch.setattr(
+        server_module,
+        "get_current_user",
+        lambda authorization: {"id": 101, "phone": "13800138000", "nickname": "owner", "avatar_url": None, "status": "active"},
+    )
+    monkeypatch.setattr(
+        server_module,
+        "get_point_topup_order",
+        lambda order_no: {
+            "order_no": order_no,
+            "user_id": 101,
+            "product_code": "points_quantity_topup",
+            "amount_fen": 300,
+            "status": "pending",
+            "pay_channel": "wechat_native",
+            "wechat_code_url": "weixin://wxpay/mock",
+            "paid_at": None,
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "query_wechat_payment_order",
+        lambda order_no: {
+            "status": "SUCCESS",
+            "transaction_id": "wx_tx_123",
+        },
+    )
+    monkeypatch.setattr(
+        server_module,
+        "mark_point_topup_order_paid",
+        lambda order_no, transaction_id: {
+            "order_no": order_no,
+            "user_id": 101,
+            "product_code": "points_quantity_topup",
+            "amount_fen": 300,
+            "status": "paid",
+            "pay_channel": "wechat_native",
+            "wechat_code_url": "weixin://wxpay/mock",
+            "paid_at": "2026-06-06T13:30:00",
+        },
+    )
+
+    response = client.get(
+        "/points/topup-orders/DACP202606060001",
+        headers={"Authorization": "Bearer access-token"},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "paid"
+    assert data["paid_at"] == "2026-06-06T13:30:00"
+
+
 def test_redeem_points_endpoint_returns_updated_balance_and_entitlement(monkeypatch):
     monkeypatch.setattr(
         server_module,

@@ -85,6 +85,17 @@ def test_me_endpoint_returns_membership_points_and_entitlements(monkeypatch):
     monkeypatch.setattr(server_module, "get_user_points_balance", lambda user_id: 1200)
     monkeypatch.setattr(
         server_module,
+        "build_chat_quota_response",
+        lambda user_id, membership: {
+            "daily_limit": 30,
+            "daily_used": 7,
+            "daily_remaining": 23,
+            "is_unlimited": False,
+        },
+        raising=False,
+    )
+    monkeypatch.setattr(
+        server_module,
         "list_user_entitlements",
         lambda user_id: [
             {
@@ -104,6 +115,12 @@ def test_me_endpoint_returns_membership_points_and_entitlements(monkeypatch):
     data = response.json()
     assert data["membership"]["tier"] == "vip"
     assert data["points_balance"] == 1200
+    assert data["chat_quota"] == {
+        "daily_limit": 30,
+        "daily_used": 7,
+        "daily_remaining": 23,
+        "is_unlimited": False,
+    }
     assert [item["entitlement_code"] for item in data["entitlements"]] == [
         "music.world_is_mine",
     ]

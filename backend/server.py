@@ -1808,6 +1808,33 @@ def iter_local_search_result_stream(result_factory):
     yield sse_event("done", "done")
 
 
+def safe_iter_local_search_or_passthrough_stream(
+    *,
+    message: str,
+    system_prompt: str,
+    context: list[dict],
+    api_key: str,
+    base_url: str,
+    model: str,
+    timeout: int,
+):
+    try:
+        yield from iter_local_search_result_stream(lambda: resolve_search_result(message))
+        return
+    except Exception:
+        yield sse_event("phase", "composing")
+        yield from iter_passthrough_stream(
+            system_prompt=system_prompt,
+            context=context,
+            message=message,
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            emit_prelude=False,
+        )
+
+
 def sse_event(event: str, data: str) -> str:
     return f"event: {event}\ndata: {data}\n\n"
 
@@ -2682,13 +2709,18 @@ async def chat_stream_passthrough(request: PassthroughChatRequest, authorization
     api_key, base_url, model = resolve_llm_settings(current)
     context = [item.model_dump() for item in request.context]
     if needs_live_search(request.message):
-        try:
-            return StreamingResponse(
-                iter_local_search_result_stream(lambda: resolve_search_result(request.message)),
-                media_type="text/event-stream",
-            )
-        except Exception:
-            pass
+        return StreamingResponse(
+            safe_iter_local_search_or_passthrough_stream(
+                message=request.message,
+                system_prompt=request.system_prompt,
+                context=context,
+                api_key=api_key,
+                base_url=base_url,
+                model=model,
+                timeout=STREAM_LLM_TIMEOUT,
+            ),
+            media_type="text/event-stream",
+        )
     return StreamingResponse(
         iter_passthrough_stream(
             system_prompt=request.system_prompt,

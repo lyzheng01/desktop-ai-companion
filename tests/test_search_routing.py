@@ -39,6 +39,10 @@ def test_extract_weather_location_drops_freshness_words():
     assert extract_weather_location("合肥今天天气如何") == "合肥"
 
 
+def test_extract_weather_location_drops_question_words():
+    assert extract_weather_location("合肥今天什么天气") == "合肥"
+
+
 def test_current_date_question_requires_live_path():
     assert needs_live_search("今天几号") is True
 

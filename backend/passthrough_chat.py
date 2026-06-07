@@ -109,9 +109,11 @@ def iter_passthrough_stream(
     base_url: str,
     model: str,
     timeout: int = STREAM_TIMEOUT,
+    emit_prelude: bool = True,
 ) -> Iterator[str]:
-    yield sse_event("state", "thinking")
-    yield sse_event("phase", "composing")
+    if emit_prelude:
+        yield sse_event("state", "thinking")
+        yield sse_event("phase", "composing")
 
     payload = {
         "model": model,
