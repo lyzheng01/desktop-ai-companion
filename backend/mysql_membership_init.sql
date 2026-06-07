@@ -109,8 +109,8 @@ INSERT INTO `membership_plans` (
     'active',
     JSON_OBJECT(
       'max_companions', 1,
-      'daily_message_quota', 100,
-      'monthly_message_quota', 3000,
+      'daily_message_quota', 10,
+      'monthly_message_quota', 300,
       'model_access_level', 'free',
       'voice_access_level', 'free'
     )
@@ -118,13 +118,13 @@ INSERT INTO `membership_plans` (
   (
     'vip_monthly',
     'VIP 月卡',
-    2900,
+    1990,
     30,
     'active',
     JSON_OBJECT(
       'max_companions', 3,
-      'daily_message_quota', 300,
-      'monthly_message_quota', 10000,
+      'daily_message_quota', 30,
+      'monthly_message_quota', 900,
       'model_access_level', 'vip',
       'voice_access_level', 'vip'
     )
@@ -132,13 +132,13 @@ INSERT INTO `membership_plans` (
   (
     'svip_monthly',
     'SVIP 月卡',
-    5900,
+    3990,
     30,
     'active',
     JSON_OBJECT(
       'max_companions', 10,
-      'daily_message_quota', 1000,
-      'monthly_message_quota', 30000,
+      'daily_message_quota', -1,
+      'monthly_message_quota', -1,
       'model_access_level', 'svip',
       'voice_access_level', 'svip'
     )

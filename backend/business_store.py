@@ -5,37 +5,41 @@ import hashlib
 import re
 import struct
 import unicodedata
-from datetime import datetime, timedelta
+import io
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import quote
 
 import pymysql
 from pymysql.cursors import DictCursor
+from PIL import Image
 
 
 FREE_BENEFITS = {
     "max_companions": 1,
-    "daily_message_quota": 100,
-    "monthly_message_quota": 3000,
+    "daily_message_quota": 10,
+    "monthly_message_quota": 300,
     "model_access_level": "free",
     "voice_access_level": "free",
 }
 
 VIP_BENEFITS = {
     "max_companions": 3,
-    "daily_message_quota": 300,
-    "monthly_message_quota": 10000,
+    "daily_message_quota": 30,
+    "monthly_message_quota": 900,
     "model_access_level": "vip",
     "voice_access_level": "vip",
 }
 
 SVIP_BENEFITS = {
     "max_companions": 10,
-    "daily_message_quota": 1000,
-    "monthly_message_quota": 30000,
+    "daily_message_quota": -1,
+    "monthly_message_quota": -1,
     "model_access_level": "svip",
     "voice_access_level": "svip",
 }
+
+CHAT_USAGE_TIMEZONE = timezone(timedelta(hours=8))
 
 PLAN_DEFINITIONS = [
     {
@@ -49,7 +53,7 @@ PLAN_DEFINITIONS = [
     {
         "plan_code": "vip_monthly",
         "plan_name": "VIP 月卡",
-        "price_fen": 2900,
+        "price_fen": 1990,
         "duration_days": 30,
         "status": "active",
         "benefits_json": json.dumps(VIP_BENEFITS, ensure_ascii=False),
@@ -57,7 +61,7 @@ PLAN_DEFINITIONS = [
     {
         "plan_code": "svip_monthly",
         "plan_name": "SVIP 月卡",
-        "price_fen": 5900,
+        "price_fen": 3990,
         "duration_days": 30,
         "status": "active",
         "benefits_json": json.dumps(SVIP_BENEFITS, ensure_ascii=False),
@@ -180,6 +184,28 @@ DEFAULT_REMOTE_DANCE_FILENAMES = {
     "MMD-Ageage Again.unity3d",
     "MMD-World is Mine.unity3d",
 }
+REMOTE_AVATAR_DISPLAY_NAME_MAP = {
+    "1773659974728287682": "Noah",
+    "2642273128111274791": "Mira",
+    "2684253542222290860": "Luna",
+    "3034936425218793929": "Sketch",
+    "3810254632681458717": "Blush",
+    "4043018172957611916": "Iris",
+    "4516400572461202757": "Frost",
+    "4718117629272938204": "Mist",
+    "5075840185788639488": "Pearl",
+    "5587815854662789051": "Nyx",
+    "6112490815508488228": "Aqua",
+    "6823478844411844649": "Chibi",
+    "6972866312692243350": "Hinata",
+    "7122791886834244869": "Rex",
+    "7270968377500925804": "Clara",
+    "7643054104406740418": "Kai",
+    "7735610165628982316": "Peony",
+    "8183619569923460562": "Nova",
+    "9188314527792034396": "Silk",
+    "CamomeCamome": "Momo",
+}
 
 
 def mysql_is_configured() -> bool:
@@ -211,6 +237,20 @@ def get_mysql_connection() -> pymysql.connections.Connection:
 
 def now_utc() -> datetime:
     return datetime.utcnow()
+
+
+def current_chat_usage_date() -> date:
+    return now_utc().replace(tzinfo=timezone.utc).astimezone(CHAT_USAGE_TIMEZONE).date()
+
+
+def normalize_daily_chat_limit(value: object) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    if parsed < 0:
+        return None
+    return parsed
 
 
 def _slugify_filename(value: str) -> str:
@@ -322,11 +362,104 @@ def _extract_vrm_embedded_cover(path: Path, *, product_code: str, covers_dir: Pa
     return destination
 
 
+def _select_vrm_fallback_image_index(document: dict) -> int | None:
+    images = document.get("images") or []
+    textures = document.get("textures") or []
+    materials = document.get("materials") or []
+
+    if not images or not textures:
+        return None
+
+    preferred_keywords = (
+        "face",
+        "facial",
+        "head",
+        "portrait",
+        "表情",
+        "脸",
+        "顔",
+        "顏",
+        "头",
+        "頭",
+    )
+
+    for index, image_entry in enumerate(images):
+        image_name = str((image_entry or {}).get("name") or "").strip().lower()
+        if not image_name:
+            continue
+        if any(keyword in image_name for keyword in preferred_keywords):
+            return index
+
+    texture_usage: dict[int, int] = {}
+    for material in materials:
+        pbr = (material or {}).get("pbrMetallicRoughness") or {}
+        base_color_texture = pbr.get("baseColorTexture") or {}
+        texture_index = base_color_texture.get("index")
+        if not isinstance(texture_index, int):
+            continue
+        if texture_index < 0 or texture_index >= len(textures):
+            continue
+        texture_usage[texture_index] = texture_usage.get(texture_index, 0) + 1
+
+    if texture_usage:
+        for texture_index, _ in sorted(texture_usage.items(), key=lambda item: (-item[1], item[0])):
+            image_index = (textures[texture_index] or {}).get("source")
+            if isinstance(image_index, int) and 0 <= image_index < len(images):
+                return image_index
+
+    for texture_entry in textures:
+        image_index = (texture_entry or {}).get("source")
+        if isinstance(image_index, int) and 0 <= image_index < len(images):
+            return image_index
+
+    return None
+
+
+def _extract_vrm_fallback_cover(path: Path, *, product_code: str, covers_dir: Path) -> Path | None:
+    document, binary_chunk = _read_glb_json_and_binary_chunks(path)
+    if not document or not binary_chunk:
+        return None
+
+    images = document.get("images") or []
+    buffer_views = document.get("bufferViews") or []
+    image_index = _select_vrm_fallback_image_index(document)
+    if not isinstance(image_index, int) or image_index < 0 or image_index >= len(images):
+        return None
+
+    image_entry = images[image_index] or {}
+    buffer_view_index = image_entry.get("bufferView")
+    if not isinstance(buffer_view_index, int) or buffer_view_index < 0 or buffer_view_index >= len(buffer_views):
+        return None
+
+    buffer_view = buffer_views[buffer_view_index] or {}
+    byte_offset = int(buffer_view.get("byteOffset") or 0)
+    byte_length = int(buffer_view.get("byteLength") or 0)
+    if byte_length <= 0:
+        return None
+
+    image_bytes = binary_chunk[byte_offset : byte_offset + byte_length]
+    if not image_bytes:
+        return None
+
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as source_image:
+            cover = source_image.convert("RGBA")
+            cover.thumbnail((512, 512))
+            covers_dir.mkdir(parents=True, exist_ok=True)
+            destination = covers_dir / f"{product_code}.png"
+            cover.save(destination, format="PNG")
+            return destination
+    except (OSError, ValueError):
+        return None
+
+
 def _ensure_remote_asset_cover(path: Path, *, product_code: str, kind: str) -> str:
     if kind != "avatar" or path.suffix.lower() != ".vrm":
         return ""
 
     cover_path = _extract_vrm_embedded_cover(path, product_code=product_code, covers_dir=_get_remote_asset_cover_dir())
+    if cover_path is None:
+        cover_path = _extract_vrm_fallback_cover(path, product_code=product_code, covers_dir=_get_remote_asset_cover_dir())
     if cover_path is None:
         return ""
 
@@ -335,6 +468,12 @@ def _ensure_remote_asset_cover(path: Path, *, product_code: str, kind: str) -> s
     except ValueError:
         return ""
     return f"/static-assets/{relative_path}"
+
+
+def _resolve_remote_asset_display_name(kind: str, stem: str) -> str:
+    if kind == "avatar":
+        return REMOTE_AVATAR_DISPLAY_NAME_MAP.get(stem, stem)
+    return stem
 
 
 def _build_remote_asset_product(
@@ -348,6 +487,7 @@ def _build_remote_asset_product(
     stat = path.stat()
     sha256_hex = _compute_file_sha256(path)
     stem = path.stem
+    display_name = _resolve_remote_asset_display_name(kind, stem)
     slug = _slugify_filename(stem)
     try:
         relative_source_path = path.relative_to(STATIC_ASSET_ROOT).as_posix()
@@ -357,7 +497,7 @@ def _build_remote_asset_product(
     asset_key = f"{asset_prefix}/{slug}-{sha256_hex[:12]}"
     cover_url = _ensure_remote_asset_cover(path, product_code=product_code, kind=kind)
     payload = {
-        "title": stem,
+        "title": display_name,
         "source_filename": path.name,
         "source_relative_path": relative_source_path,
         "asset_hash": f"sha256:{sha256_hex}",
@@ -368,7 +508,7 @@ def _build_remote_asset_product(
         payload["cover_path"] = cover_url
     return {
         "product_code": product_code,
-        "product_name": stem,
+        "product_name": display_name,
         "product_type": product_type,
         "point_price": point_price,
         "status": "active",
@@ -444,10 +584,16 @@ def _cached_remote_asset_products_need_rebuild(products: list[dict]) -> bool:
     for item in products:
         product_type = str(item.get("product_type") or "").lower()
         payload = item.get("payload") or {}
+        kind = str(payload.get("kind") or "")
         source_relative_path = str(payload.get("source_relative_path") or "")
         source_path = REMOTE_ASSET_ROOT.parent / source_relative_path if source_relative_path else None
 
         if product_type.startswith("character") and source_path is not None and source_path.suffix.lower() == ".vrm":
+            expected_display_name = _resolve_remote_asset_display_name(kind, source_path.stem) if kind == "avatar" else source_path.stem
+            if str(item.get("product_name") or "") != expected_display_name:
+                return True
+            if str(payload.get("title") or "") != expected_display_name:
+                return True
             cover_url = str(item.get("cover_url") or "").strip()
             if not cover_url:
                 return True
@@ -576,6 +722,21 @@ def init_business_tables() -> None:
                     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                     INDEX idx_user_memberships_user_id (user_id),
                     CONSTRAINT fk_user_memberships_user FOREIGN KEY (user_id) REFERENCES users(id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_daily_chat_usage (
+                    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+                    user_id BIGINT NOT NULL,
+                    usage_date DATE NOT NULL,
+                    used_count INT NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                    UNIQUE KEY uk_user_daily_chat_usage (user_id, usage_date),
+                    INDEX idx_user_daily_chat_usage_user_id (user_id),
+                    CONSTRAINT fk_user_daily_chat_usage_user FOREIGN KEY (user_id) REFERENCES users(id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
                 """
             )
@@ -958,6 +1119,94 @@ def get_user_membership(user_id: int) -> dict:
         "expires_at": row["expires_at"],
         "benefits": _parse_benefits(row),
     }
+
+
+def get_user_daily_chat_usage(user_id: int, usage_date: date | None = None) -> int:
+    if not mysql_is_configured():
+        return 0
+
+    resolved_usage_date = usage_date or current_chat_usage_date()
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT used_count
+                FROM user_daily_chat_usage
+                WHERE user_id = %s AND usage_date = %s
+                LIMIT 1
+                """,
+                (user_id, resolved_usage_date),
+            )
+            row = cursor.fetchone()
+            return int(row["used_count"]) if row else 0
+    finally:
+        conn.close()
+
+
+def consume_user_daily_chat_usage(user_id: int, daily_limit: int | None, usage_date: date | None = None) -> dict:
+    if not mysql_is_configured():
+        raise RuntimeError("MySQL is not configured")
+
+    resolved_usage_date = usage_date or current_chat_usage_date()
+    normalized_limit = normalize_daily_chat_limit(daily_limit)
+    conn = get_mysql_connection()
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT id, used_count
+                FROM user_daily_chat_usage
+                WHERE user_id = %s AND usage_date = %s
+                FOR UPDATE
+                """,
+                (user_id, resolved_usage_date),
+            )
+            row = cursor.fetchone()
+            used_before = int(row["used_count"]) if row else 0
+
+            if normalized_limit is not None and used_before >= normalized_limit:
+                conn.rollback()
+                return {
+                    "allowed": False,
+                    "daily_limit": normalized_limit,
+                    "daily_used": used_before,
+                    "daily_remaining": 0,
+                    "is_unlimited": False,
+                }
+
+            daily_used = used_before + 1
+            if row:
+                cursor.execute(
+                    """
+                    UPDATE user_daily_chat_usage
+                    SET used_count = %s
+                    WHERE id = %s
+                    """,
+                    (daily_used, row["id"]),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO user_daily_chat_usage (user_id, usage_date, used_count)
+                    VALUES (%s, %s, %s)
+                    """,
+                    (user_id, resolved_usage_date, daily_used),
+                )
+
+            conn.commit()
+            return {
+                "allowed": True,
+                "daily_limit": normalized_limit,
+                "daily_used": daily_used,
+                "daily_remaining": None if normalized_limit is None else max(normalized_limit - daily_used, 0),
+                "is_unlimited": normalized_limit is None,
+            }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def list_store_products() -> list[dict]:

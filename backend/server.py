@@ -23,6 +23,10 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from backend.env_bootstrap import load_project_env
+
+load_project_env(PROJECT_ROOT)
+
 DEFAULT_LLM_BASE_URL = "https://gmn.chuangzuoli.com/v1"
 DEFAULT_LLM_API_KEY = "sk-d58e97d25a5a4fd3272b6b11c81c71efd00829080e3c2ed444c00f558e545299"
 DEFAULT_LLM_MODEL = "gpt-5.4"
@@ -74,6 +78,7 @@ from backend.auth_utils import (
 )
 from backend.business_store import (
     build_asset_download_manifest,
+    consume_user_daily_chat_usage,
     create_point_topup_order,
     create_user_with_password,
     create_payment_order,
@@ -91,6 +96,7 @@ from backend.business_store import (
     list_point_topup_products,
     get_session_by_refresh_token_hash,
     get_user_by_phone,
+    get_user_daily_chat_usage,
     get_user_by_id,
     get_user_membership,
     get_user_points_balance,
@@ -102,6 +108,7 @@ from backend.business_store import (
     mark_point_topup_order_paid,
     mark_order_paid,
     mysql_is_configured,
+    normalize_daily_chat_limit,
     now_utc,
     redeem_store_product,
     set_user_password,
@@ -116,6 +123,7 @@ from backend.provider_services import (
     get_sms_captcha_client_config,
     get_sms_captcha_provider,
     parse_wechat_payment_notification,
+    query_wechat_payment_order,
     send_login_sms,
     verify_sms_captcha,
 )
@@ -566,10 +574,18 @@ class EntitlementResponse(BaseModel):
     payload: dict[str, object] = Field(default_factory=dict)
 
 
+class ChatQuotaResponse(BaseModel):
+    daily_limit: int | None = None
+    daily_used: int = 0
+    daily_remaining: int | None = None
+    is_unlimited: bool = False
+
+
 class MeResponse(BaseModel):
     user: UserResponse
     membership: MembershipResponse
     points_balance: int = 0
+    chat_quota: ChatQuotaResponse = Field(default_factory=ChatQuotaResponse)
     entitlements: list[EntitlementResponse] = Field(default_factory=list)
 
 
@@ -721,9 +737,22 @@ def to_api_config(current: AppConfig) -> Config:
 
 
 def resolve_llm_settings(config: AppConfig) -> tuple[str, str, str]:
-    api_key = os.getenv("OPENAI_API_KEY", "").strip() or config.api_key.strip() or DEFAULT_LLM_API_KEY
-    base_url = DEFAULT_LLM_BASE_URL
-    model = DEFAULT_LLM_MODEL
+    api_key = (
+        os.getenv("DESKTOP_AI_COMPANION_OPENAI_API_KEY", "").strip()
+        or os.getenv("OPENAI_API_KEY", "").strip()
+        or config.api_key.strip()
+        or DEFAULT_LLM_API_KEY
+    )
+    base_url = (
+        os.getenv("DESKTOP_AI_COMPANION_OPENAI_BASE_URL", "").strip()
+        or os.getenv("OPENAI_BASE_URL", "").strip()
+        or DEFAULT_LLM_BASE_URL
+    )
+    model = (
+        os.getenv("DESKTOP_AI_COMPANION_OPENAI_MODEL", "").strip()
+        or os.getenv("OPENAI_MODEL", "").strip()
+        or DEFAULT_LLM_MODEL
+    )
     return api_key, base_url, model
 
 
@@ -940,6 +969,60 @@ def build_membership_response(membership: dict) -> MembershipResponse:
     )
 
 
+def resolve_membership_daily_chat_limit(membership: dict) -> int | None:
+    tier = str((membership or {}).get("tier") or "free").strip().lower()
+    benefits = (membership or {}).get("benefits") or {}
+    limit = normalize_daily_chat_limit(benefits.get("daily_message_quota"))
+    if limit is None:
+        return None
+    if limit > 0:
+        return limit
+    if tier == "svip":
+        return None
+    if tier == "vip":
+        return 30
+    return 10
+
+
+def build_chat_quota_response(user_id: int, membership: dict) -> ChatQuotaResponse:
+    daily_limit = resolve_membership_daily_chat_limit(membership)
+    daily_used = get_user_daily_chat_usage(int(user_id))
+    return ChatQuotaResponse(
+        daily_limit=daily_limit,
+        daily_used=daily_used,
+        daily_remaining=None if daily_limit is None else max(daily_limit - daily_used, 0),
+        is_unlimited=daily_limit is None,
+    )
+
+
+def consume_chat_quota_or_raise(user_id: int, membership: dict) -> None:
+    daily_limit = resolve_membership_daily_chat_limit(membership)
+    result = consume_user_daily_chat_usage(int(user_id), daily_limit)
+    if result.get("allowed"):
+        return
+
+    tier = str((membership or {}).get("tier") or "free").strip().lower()
+    if tier == "vip":
+        detail = "今日大模型对话次数已用完，请明天再试或升级 SVIP"
+    else:
+        detail = "今日大模型对话次数已用完，请明天再试或开通 VIP"
+    raise HTTPException(status_code=403, detail=detail)
+
+
+def require_passthrough_chat_user(authorization: str | None) -> tuple[dict, dict]:
+    ensure_business_ready()
+    if not authorization or not authorization.lower().startswith("bearer "):
+        raise HTTPException(status_code=401, detail="请先登录账号后再使用大模型对话")
+    try:
+        user = get_current_user(authorization)
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            raise HTTPException(status_code=401, detail="登录状态已失效，请重新登录后再试") from exc
+        raise
+    membership = get_user_membership(int(user["id"]))
+    return user, membership
+
+
 def issue_auth_session(user: dict, device_id: str | None, device_name: str | None) -> AuthSessionResponse:
     access_token = sign_access_token(int(user["id"]), str(user["phone"]))
     refresh_token = generate_refresh_token()
@@ -1126,6 +1209,7 @@ def get_point_topup_public_status(order_no: str, token: str) -> dict:
     order = get_point_topup_order(order_no)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+    order = refresh_pending_wechat_order(order, mark_point_topup_order_paid)
 
     return {
         "order_no": order["order_no"],
@@ -1142,12 +1226,33 @@ def get_membership_public_status(order_no: str, token: str) -> dict:
     order = get_payment_order(order_no)
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
+    order = refresh_pending_wechat_order(order, mark_order_paid)
 
     return {
         "order_no": order["order_no"],
         "status": str(order.get("status") or "pending"),
         "paid_at": order.get("paid_at"),
     }
+
+
+def refresh_pending_wechat_order(order: dict | None, mark_paid_func) -> dict | None:
+    if not order:
+        return order
+    if str(order.get("status") or "").lower() != "pending":
+        return order
+    if str(order.get("pay_channel") or "").strip().lower() != "wechat_native":
+        return order
+
+    try:
+        payment = query_wechat_payment_order(str(order["order_no"]))
+    except Exception:
+        return order
+
+    if str(payment.get("status") or "").upper() not in {"SUCCESS", "TRANSACTION.SUCCESS"}:
+        return order
+
+    refreshed = mark_paid_func(str(order["order_no"]), payment.get("transaction_id"))
+    return refreshed or order
 
 
 def acquire_remote_asset_for_user(
@@ -1418,7 +1523,7 @@ def is_news_query(message: str) -> bool:
 
 
 def extract_weather_location(query: str) -> str:
-    normalized = re.sub(r"(今天|现在|最近|请问|一下|如何|怎么样|怎样|简短回答|回答|天气)", "", query)
+    normalized = re.sub(r"(今天|现在|最近|请问|一下|如何|怎么样|怎样|什么|啥|简短回答|回答|天气)", "", query)
     normalized = re.sub(r"[，。！？、,.!?\\s]+", "", normalized)
 
     city_match = re.search(r"([\u4e00-\u9fa5]{2,10})", normalized)
@@ -2172,6 +2277,7 @@ async def me_endpoint(authorization: str | None = Header(default=None)):
         user=build_user_response(user),
         membership=build_membership_response(membership),
         points_balance=points_balance,
+        chat_quota=build_chat_quota_response(int(user["id"]), membership),
         entitlements=[EntitlementResponse(**item) for item in entitlements],
     )
 
@@ -2281,6 +2387,7 @@ async def get_point_topup_order_endpoint(order_no: str, authorization: str | Non
     order = get_point_topup_order(order_no)
     if not order or int(order["user_id"]) != int(user["id"]):
         raise HTTPException(status_code=404, detail="Order not found")
+    order = refresh_pending_wechat_order(order, mark_point_topup_order_paid)
     return PointTopupOrderResponse(
         order_no=order["order_no"],
         product_code=order["product_code"],
@@ -2393,6 +2500,7 @@ async def get_order_status_endpoint(order_no: str, authorization: str | None = H
     order = get_payment_order(order_no)
     if not order or int(order["user_id"]) != int(user["id"]):
         raise HTTPException(status_code=404, detail="Order not found")
+    order = refresh_pending_wechat_order(order, mark_order_paid)
     return PaymentOrderResponse(
         order_no=order["order_no"],
         plan_code=order["plan_code"],
@@ -2567,7 +2675,9 @@ async def chat_stream(request: ChatRequest):
 
 
 @app.post("/chat/stream/passthrough")
-async def chat_stream_passthrough(request: PassthroughChatRequest):
+async def chat_stream_passthrough(request: PassthroughChatRequest, authorization: str | None = Header(default=None)):
+    user, membership = require_passthrough_chat_user(authorization)
+    consume_chat_quota_or_raise(int(user["id"]), membership)
     current = get_config()
     api_key, base_url, model = resolve_llm_settings(current)
     context = [item.model_dump() for item in request.context]

@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import time
+from urllib.parse import quote
 
 import httpx
 from cryptography.hazmat.primitives import hashes, serialization
@@ -77,6 +78,21 @@ def create_wechat_native_payment(order_no: str, amount_fen: int, description: st
         "prepay_id": f"mock_prepay_{order_no}",
         "description": description,
         "amount_fen": amount_fen,
+    }
+
+
+def query_wechat_payment_order(order_no: str) -> dict:
+    provider = os.getenv("DESKTOP_AI_COMPANION_WECHAT_PAY_PROVIDER", "mock").strip().lower() or "mock"
+    if provider == "wechat":
+        return _query_wechat_payment_order(order_no)
+    if provider != "mock":
+        raise NotImplementedError(f"Unsupported WeChat Pay provider: {provider}")
+    return {
+        "provider": "mock",
+        "order_no": order_no,
+        "status": "PENDING",
+        "transaction_id": None,
+        "response": {},
     }
 
 
@@ -254,14 +270,29 @@ def _build_wechat_signature(method: str, canonical_url: str, timestamp: str, non
     return base64.b64encode(signature).decode("utf-8")
 
 
+def _build_wechat_request_headers(method: str, canonical_url: str, body: str) -> dict:
+    mchid = _require_env("WECHAT_PAY_MCH_ID")
+    serial_no = _require_env("WECHAT_PAY_SERIAL_NO")
+    nonce = os.urandom(16).hex()
+    timestamp = str(int(time.time()))
+    signature = _build_wechat_signature(method, canonical_url, timestamp, nonce, body)
+    authorization = (
+        f'WECHATPAY2-SHA256-RSA2048 mchid="{mchid}",'
+        f'serial_no="{serial_no}",nonce_str="{nonce}",timestamp="{timestamp}",signature="{signature}"'
+    )
+    return {
+        "Authorization": authorization,
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": "desktop-ai-companion/0.1",
+    }
+
+
 def _create_wechat_native_payment(order_no: str, amount_fen: int, description: str) -> dict:
     mchid = _require_env("WECHAT_PAY_MCH_ID")
     appid = _require_env("WECHAT_PAY_APP_ID")
-    serial_no = _require_env("WECHAT_PAY_SERIAL_NO")
     notify_url = _require_env("WECHAT_PAY_NOTIFY_URL")
     endpoint = os.getenv("WECHAT_PAY_API_BASE", "https://api.mch.weixin.qq.com").rstrip("/")
-    nonce = os.urandom(16).hex()
-    timestamp = str(int(time.time()))
     canonical_url = "/v3/pay/transactions/native"
     payload = {
         "appid": appid,
@@ -272,17 +303,7 @@ def _create_wechat_native_payment(order_no: str, amount_fen: int, description: s
         "amount": {"total": amount_fen, "currency": "CNY"},
     }
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    signature = _build_wechat_signature("POST", canonical_url, timestamp, nonce, body)
-    authorization = (
-        f'WECHATPAY2-SHA256-RSA2048 mchid="{mchid}",'
-        f'serial_no="{serial_no}",nonce_str="{nonce}",timestamp="{timestamp}",signature="{signature}"'
-    )
-    headers = {
-        "Authorization": authorization,
-        "Accept": "application/json",
-        "Content-Type": "application/json",
-        "User-Agent": "desktop-ai-companion/0.1",
-    }
+    headers = _build_wechat_request_headers("POST", canonical_url, body)
     response = httpx.post(f"{endpoint}{canonical_url}", headers=headers, content=body, timeout=20)
     response.raise_for_status()
     data = response.json()
@@ -295,6 +316,23 @@ def _create_wechat_native_payment(order_no: str, amount_fen: int, description: s
         "prepay_id": data.get("prepay_id") or order_no,
         "description": description,
         "amount_fen": amount_fen,
+        "response": data,
+    }
+
+
+def _query_wechat_payment_order(order_no: str) -> dict:
+    mchid = _require_env("WECHAT_PAY_MCH_ID")
+    endpoint = os.getenv("WECHAT_PAY_API_BASE", "https://api.mch.weixin.qq.com").rstrip("/")
+    canonical_url = f"/v3/pay/transactions/out-trade-no/{quote(order_no, safe='')}?mchid={quote(mchid, safe='')}"
+    headers = _build_wechat_request_headers("GET", canonical_url, "")
+    response = httpx.get(f"{endpoint}{canonical_url}", headers=headers, timeout=20)
+    response.raise_for_status()
+    data = response.json()
+    return {
+        "provider": "wechat",
+        "order_no": data.get("out_trade_no") or order_no,
+        "status": data.get("trade_state") or "UNKNOWN",
+        "transaction_id": data.get("transaction_id"),
         "response": data,
     }
 
