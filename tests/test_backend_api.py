@@ -70,6 +70,39 @@ def test_resolve_llm_settings_prefers_desktop_specific_env_over_generic(monkeypa
     assert model == "deepseek-chat"
 
 
+def test_resolve_live_search_llm_settings_uses_default_search_provider_when_primary_chat_is_deepseek(monkeypatch):
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_OPENAI_API_KEY", "desktop-key")
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_OPENAI_MODEL", "deepseek-chat")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://api.aixhan.com/v1")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("DESKTOP_AI_COMPANION_LIVE_OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("DESKTOP_AI_COMPANION_LIVE_OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("DESKTOP_AI_COMPANION_LIVE_OPENAI_MODEL", raising=False)
+
+    api_key, base_url, model = server_module.resolve_live_search_llm_settings(AppConfig())
+
+    assert bool(api_key) is True
+    assert base_url == server_module.DEFAULT_LLM_BASE_URL
+    assert model == server_module.DEFAULT_LLM_MODEL
+
+
+def test_resolve_live_search_llm_settings_prefers_dedicated_live_search_env(monkeypatch):
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_OPENAI_API_KEY", "desktop-key")
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_OPENAI_BASE_URL", "https://api.deepseek.com/v1")
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_OPENAI_MODEL", "deepseek-chat")
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_LIVE_OPENAI_API_KEY", "live-key")
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_LIVE_OPENAI_BASE_URL", "https://live-search.example/v1")
+    monkeypatch.setenv("DESKTOP_AI_COMPANION_LIVE_OPENAI_MODEL", "live-model")
+
+    api_key, base_url, model = server_module.resolve_live_search_llm_settings(AppConfig())
+
+    assert api_key == "live-key"
+    assert base_url == "https://live-search.example/v1"
+    assert model == "live-model"
+
+
 def test_chat_prefers_native_live_response_for_live_queries(monkeypatch):
     monkeypatch.setattr(server_module, "generate_native_live_response", lambda message, context, config: "你，今天是 2026年05月16日，星期六。")
     monkeypatch.setattr(server_module, "search_web", lambda query: (_ for _ in ()).throw(AssertionError("search_web should not be called")))

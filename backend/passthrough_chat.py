@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import json
 from typing import Iterable, Iterator
+from urllib.parse import urlparse
 
 import httpx
 
 
 STREAM_TIMEOUT = 300
+UNSUPPORTED_RESPONSES_API_HOSTS = {
+    "api.deepseek.com",
+    "chat.deepseek.com",
+}
 
 
 def sse_event(event: str, data: str) -> str:
@@ -99,6 +104,38 @@ def iter_passthrough_live_events(deltas: Iterable[str]) -> Iterator[str]:
     yield sse_event("done", "done")
 
 
+def build_live_search_unsupported_message() -> str:
+    return "当前模型服务不支持联网搜索，请切换到支持 Responses API 的上游配置后再试。"
+
+
+def build_live_search_unavailable_message() -> str:
+    return "当前联网搜索服务暂时不可用，请稍后再试。"
+
+
+def iter_passthrough_live_error_events(message: str) -> Iterator[str]:
+    yield sse_event("state", "thinking")
+    yield sse_event("phase", "searching")
+    yield sse_event("phase", "composing")
+    yield sse_event("assistant_delta", message)
+    yield sse_event("done", "done")
+
+
+def supports_responses_api(base_url: str) -> bool:
+    normalized = (base_url or "").strip().rstrip("/").lower()
+    if not normalized:
+        return False
+
+    host = urlparse(normalized).netloc
+    return host not in UNSUPPORTED_RESPONSES_API_HOSTS
+
+
+def is_responses_api_unsupported_error(error: httpx.HTTPError) -> bool:
+    if not isinstance(error, httpx.HTTPStatusError):
+        return False
+
+    return error.response.status_code in {404, 405, 501}
+
+
 def iter_passthrough_stream(
     *,
     system_prompt: str,
@@ -159,12 +196,22 @@ def iter_passthrough_live_stream(
         "tools": [{"type": "web_search_preview"}],
         "stream": True,
     }
-    with httpx.stream(
-        "POST",
-        f"{base_url}/responses",
-        headers={"Authorization": f"Bearer {api_key}"},
-        json=payload,
-        timeout=timeout,
-    ) as response:
-        response.raise_for_status()
-        yield from iter_passthrough_live_events(iter_upstream_deltas(response))
+    if not supports_responses_api(base_url):
+        yield from iter_passthrough_live_error_events(build_live_search_unsupported_message())
+        return
+
+    try:
+        with httpx.stream(
+            "POST",
+            f"{base_url}/responses",
+            headers={"Authorization": f"Bearer {api_key}"},
+            json=payload,
+            timeout=timeout,
+        ) as response:
+            response.raise_for_status()
+            yield from iter_passthrough_live_events(iter_upstream_deltas(response))
+    except httpx.HTTPError as error:
+        if is_responses_api_unsupported_error(error):
+            yield from iter_passthrough_live_error_events(build_live_search_unsupported_message())
+            return
+        yield from iter_passthrough_live_error_events(build_live_search_unavailable_message())

@@ -756,6 +756,22 @@ def resolve_llm_settings(config: AppConfig) -> tuple[str, str, str]:
     return api_key, base_url, model
 
 
+def resolve_live_search_llm_settings(config: AppConfig) -> tuple[str, str, str]:
+    live_api_key = os.getenv("DESKTOP_AI_COMPANION_LIVE_OPENAI_API_KEY", "").strip()
+    live_base_url = os.getenv("DESKTOP_AI_COMPANION_LIVE_OPENAI_BASE_URL", "").strip()
+    live_model = os.getenv("DESKTOP_AI_COMPANION_LIVE_OPENAI_MODEL", "").strip()
+    if live_api_key and live_base_url:
+        return live_api_key, live_base_url, live_model or DEFAULT_LLM_MODEL
+
+    generic_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    generic_base_url = os.getenv("OPENAI_BASE_URL", "").strip()
+    generic_model = os.getenv("OPENAI_MODEL", "").strip()
+    if generic_api_key and generic_base_url:
+        return generic_api_key, generic_base_url, generic_model or DEFAULT_LLM_MODEL
+
+    return DEFAULT_LLM_API_KEY, DEFAULT_LLM_BASE_URL, DEFAULT_LLM_MODEL
+
+
 def is_vip_user() -> bool:
     return False
 
@@ -1984,7 +2000,7 @@ def iter_upstream_sse_lines(response: httpx.Response):
 
 
 def generate_native_live_response(message: str, context: list[ChatMessage], config: AppConfig) -> str | None:
-    api_key, base_url, model = resolve_llm_settings(config)
+    api_key, base_url, model = resolve_live_search_llm_settings(config)
 
     if not api_key:
         return None
@@ -2016,7 +2032,7 @@ def generate_native_live_response(message: str, context: list[ChatMessage], conf
 
 
 def iter_native_live_response_stream(message: str, context: list[ChatMessage], config: AppConfig):
-    api_key, base_url, model = resolve_llm_settings(config)
+    api_key, base_url, model = resolve_live_search_llm_settings(config)
 
     if not api_key:
         return
@@ -2177,6 +2193,10 @@ async def health_check():
 async def send_sms_code_endpoint(payload: SmsSendRequest, request: Request):
     ensure_business_ready()
     phone = validate_phone_number(payload.phone)
+    if payload.scene == "register":
+        existing_user = get_user_by_phone(phone)
+        if existing_user and existing_user.get("password_hash"):
+            raise HTTPException(status_code=409, detail="Phone already registered")
     request_ip = request.client.host if request.client else None
     verify_sms_send_captcha(phone, payload.scene, payload.captcha_ticket, payload.captcha_randstr, request_ip)
     code = generate_sms_code()
@@ -2706,11 +2726,11 @@ async def chat_stream_passthrough(request: PassthroughChatRequest, authorization
     user, membership = require_passthrough_chat_user(authorization)
     consume_chat_quota_or_raise(int(user["id"]), membership)
     current = get_config()
-    api_key, base_url, model = resolve_llm_settings(current)
     context = [item.model_dump() for item in request.context]
     if needs_live_search(request.message):
+        api_key, base_url, model = resolve_live_search_llm_settings(current)
         return StreamingResponse(
-            safe_iter_local_search_or_passthrough_stream(
+            iter_passthrough_live_stream(
                 message=request.message,
                 system_prompt=request.system_prompt,
                 context=context,
@@ -2721,6 +2741,7 @@ async def chat_stream_passthrough(request: PassthroughChatRequest, authorization
             ),
             media_type="text/event-stream",
         )
+    api_key, base_url, model = resolve_llm_settings(current)
     return StreamingResponse(
         iter_passthrough_stream(
             system_prompt=request.system_prompt,
