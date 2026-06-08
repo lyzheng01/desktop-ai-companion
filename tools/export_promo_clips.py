@@ -21,6 +21,76 @@ VIDEO_PRESETS = {
 }
 
 
+def build_mock_chat_reply(message: str) -> str:
+    normalized = (message or '').strip()
+
+    scripted_replies = {
+        '我今天改项目改得有点累。': '那先别急着逼自己提速。你现在更需要的不是一口气做完，而是先把今天最小的一块收掉。',
+        '而且现在有点不知道先改哪一块。': '那就别同时看三件事。先挑那个最容易验收、做完最能让你松一口气的小点，我陪你从那里开始。',
+        '我今天做桌面搭子项目有点卡住了。': '卡住不一定是你不会，更像是你现在同时想着太多块了。我们先把问题缩小。',
+        '我应该先做界面，还是先补功能？': '如果你已经知道大概要做什么，先补最影响体验的功能；如果你连流程都不顺，先把界面里最核心那一段走通。',
+        '记住我喜欢 Changli': '好呀，我记住了。以后聊到角色口味时，我会默认你更偏爱 Changli 这种强势又很有魅力的类型。',
+        '下次聊到角色偏好时提醒我。': '没问题，下次只要话题沾边，我就会顺手把这个偏好接上。',
+        '我这周在准备考试，今天复习有点乱。': '先不要想着把所有科目一次排整齐。你现在最需要的是先稳住一门。',
+        '我总觉得每科都要看，结果一门都没推进。': '那我们今天就别追求“都顾到”。先只救最急或者最容易拿分的那一门，推进一点点就比摊着强。',
+        '你帮我先定一个最小目标吧。': '那就先给自己二十分钟，只做一章重点或者一套题里的前三题。做完这一小段，再决定下一步。',
+        '我最近压力有点大，脑子一直绷着。': '我知道，这种不是单纯累，是整个人一直悬着。你先别要求自己立刻恢复状态。',
+        '明明没在做事，心里还是一直很紧。': '因为你的脑子还在持续预演那些没处理完的事。我们先别全解，先挑最压着你的那一件。',
+        '我现在该先缓一下，还是逼自己继续做？': '如果你已经绷到连下一步都看不清了，先缓五到十分钟更有用。缓完以后，只回来做最小的一步，不要一下子全开。',
+        '今晚想打会儿游戏放松一下。': '可以呀，放松本来就不是坏事。关键是别让放松变成事后更有负担。',
+        '但又怕一玩太久，明天更累。': '那就给今晚定一个边界，比如只玩一两局，或者到某个时间点就收。这样你既放松到了，也不会明天醒来后悔。',
+        '我现在稍微好一点了。': '那就好一点了就先按“好一点”的节奏来，不用马上变回满电。',
+        '不过今天还是有点提不起劲。': '那今天就别追求效率感了，先追求一点点启动感。只要你肯往前挪一步，今天就不算白过。',
+    }
+
+    if normalized in scripted_replies:
+        return scripted_replies[normalized]
+
+    if '记住我喜欢 Changli' in normalized:
+        return '好呀，我记下来了。以后聊到角色口味时，我会记得你偏爱 Changli 这种强势又有魅力的类型。'
+
+    if any(token in normalized for token in ['今天有点累', '有点累', '工作', '卡住', '先做哪个', '项目']):
+        return '辛苦啦。你现在更像是有点累，不是不会做。先挑最小的一步推进一下，做完第一小块，后面会顺很多。'
+
+    if any(token in normalized for token in ['学习', '复习', '考试', '背书', '作业']):
+        return '先别一下子压太满。我们可以先定一个二十分钟的小目标，比如只过一章重点，做完再决定要不要继续。'
+
+    if any(token in normalized for token in ['压力', '焦虑', '紧张', '烦', '崩溃']):
+        return '我懂，这种时候脑子会一直绷着。你先别急着把所有问题一起解决，先把最压着你的那一件说出来，我陪你慢慢拆。'
+
+    if any(token in normalized for token in ['游戏', '开黑', '排位', '打本', '副本']):
+        return '好呀，今天就当轻松一下。你想打得认真一点，还是我陪你走休闲放松路线？'
+
+    if '我现在稍微好一点了' in normalized:
+        return '那就好，我刚刚还在惦记你。今天先别把自己拉得太满，能慢一点就慢一点。'
+
+    return '我在呢。你继续说，我会顺着你的节奏陪你聊。'
+
+
+def build_mock_chat_delay_seconds(message: str) -> float:
+    normalized = (message or '').strip()
+
+    if any(token in normalized for token in ['考试', '复习', '学习', '压力', '焦虑', '卡住', '项目']):
+        return 4.2
+
+    if any(token in normalized for token in ['游戏', '放松', '开黑']):
+        return 3.4
+
+    if '记住' in normalized:
+        return 3.0
+
+    return 3.6
+
+
+def build_mock_chat_stream(reply: str) -> str:
+    return (
+        f'event: assistant_delta\n'
+        f'data: {reply}\n\n'
+        'event: done\n'
+        'data: done\n\n'
+    )
+
+
 def wait_for_http_server(url: str, timeout_seconds: float = 20.0) -> None:
     import requests
 
@@ -147,19 +217,18 @@ def mock_backend(page) -> None:
             return
 
         if method == "POST" and url.endswith("/chat/stream"):
+            body = route.request.post_data or '{}'
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError:
+                payload = {}
+            message = str(payload.get('message') or '')
+            time.sleep(build_mock_chat_delay_seconds(message))
+            reply = build_mock_chat_reply(message)
             route.fulfill(
                 status=200,
                 headers={"Content-Type": "text/event-stream"},
-                body=(
-                    "event: state\n"
-                    "data: thinking\n\n"
-                    "event: phase\n"
-                    "data: composing\n\n"
-                    "event: assistant_delta\n"
-                    "data: 主人，我在呢。今天也一起慢慢来吧。\n\n"
-                    "event: done\n"
-                    "data: done\n\n"
-                ),
+                body=build_mock_chat_stream(reply),
             )
             return
 
@@ -252,6 +321,16 @@ def run_scenario(page, name: str) -> None:
     page.wait_for_selector("#character-hit-area", timeout=5000)
     page.wait_for_timeout(1200)
 
+    def show_panel(panel_id: str) -> None:
+        page.evaluate(
+            f"""
+            (() => {{
+              const panel = document.getElementById('{panel_id}');
+              panel?.classList.add('visible');
+            }})()
+            """
+        )
+
     if name == "idle-mao":
         page.evaluate("window.__desktopCompanionDebug?.fitCurrentModelForPreview?.()")
         page.wait_for_timeout(4000)
@@ -264,13 +343,13 @@ def run_scenario(page, name: str) -> None:
         return
 
     if name == "open-settings":
-        page.evaluate("window.__desktopCompanionDebug?.openSettings?.()")
-        page.wait_for_timeout(3200)
+        show_panel("settings-panel")
+        page.wait_for_timeout(4200)
         return
 
     if name == "open-model-panel":
-        page.evaluate("window.__desktopCompanionDebug?.openModelPanel?.()")
-        page.wait_for_timeout(3600)
+        show_panel("model-panel")
+        page.wait_for_timeout(4600)
         return
 
     if name == "click-face":
@@ -297,10 +376,25 @@ def run_scenario(page, name: str) -> None:
         return
 
     if name == "chat-reply":
-        page.evaluate("window.__desktopCompanionDebug?.openChat?.()")
-        page.wait_for_timeout(600)
-        page.evaluate("window.__desktopCompanionDebug?.sendChatMessage?.('主人今天有点累')")
-        page.wait_for_timeout(4500)
+        run_multi_turn_chat(
+            page,
+            [
+                ("我今天改项目改得有点累。", 6200),
+                ("而且现在有点不知道先改哪一块。", 7200),
+            ],
+        )
+        return
+
+    if name == "desktop-chat-flow":
+        page.mouse.click(240, 180)
+        page.wait_for_timeout(1200)
+        run_multi_turn_chat(
+            page,
+            [
+                ("我今天做桌面搭子项目有点卡住了。", 6200),
+                ("我应该先做界面，还是先补功能？", 7600),
+            ],
+        )
         return
 
     if name == "weather-care":
@@ -309,10 +403,77 @@ def run_scenario(page, name: str) -> None:
         return
 
     if name == "memory-chat":
-        page.evaluate("window.__desktopCompanionDebug?.openChat?.()")
-        page.wait_for_timeout(600)
-        page.evaluate("window.__desktopCompanionDebug?.sendChatMessage?.('记住我喜欢 Changli')")
-        page.wait_for_timeout(4500)
+        run_multi_turn_chat(
+            page,
+            [
+                ("记住我喜欢 Changli", 5200),
+                ("下次聊到角色偏好时提醒我。", 6800),
+            ],
+        )
+        return
+
+    if name == "study-support":
+        run_multi_turn_chat(
+            page,
+            [
+                ("我这周在准备考试，今天复习有点乱。", 6200),
+                ("我总觉得每科都要看，结果一门都没推进。", 7600),
+                ("你帮我先定一个最小目标吧。", 7200),
+            ],
+        )
+        return
+
+    if name == "stress-support":
+        run_multi_turn_chat(
+            page,
+            [
+                ("我最近压力有点大，脑子一直绷着。", 6200),
+                ("明明没在做事，心里还是一直很紧。", 7600),
+                ("我现在该先缓一下，还是逼自己继续做？", 7200),
+            ],
+        )
+        return
+
+    if name == "gaming-companion":
+        run_multi_turn_chat(
+            page,
+            [
+                ("今晚想打会儿游戏放松一下。", 5200),
+                ("但又怕一玩太久，明天更累。", 7000),
+            ],
+        )
+        return
+
+    if name == "settings-live-adjust":
+        show_panel("settings-panel")
+        page.wait_for_selector("#settings-panel.visible", timeout=5000)
+        page.wait_for_timeout(1200)
+        page.select_option("#proactive-mode-select", "remind")
+        page.wait_for_timeout(1400)
+        page.evaluate(
+            """
+            (() => {
+              const slider = document.getElementById('scale-slider');
+              if (!slider) return;
+              slider.value = '1.18';
+              slider.dispatchEvent(new Event('input', { bubbles: true }));
+              slider.dispatchEvent(new Event('change', { bubbles: true }));
+            })()
+            """
+        )
+        page.wait_for_timeout(1800)
+        page.evaluate(
+            """
+            (() => {
+              const slider = document.getElementById('scale-slider');
+              if (!slider) return;
+              slider.value = '0.92';
+              slider.dispatchEvent(new Event('input', { bubbles: true }));
+              slider.dispatchEvent(new Event('change', { bubbles: true }));
+            })()
+            """
+        )
+        page.wait_for_timeout(2200)
         return
 
     if name == "switch-models":
@@ -320,6 +481,32 @@ def run_scenario(page, name: str) -> None:
         page.wait_for_timeout(1800)
         page.evaluate("window.__desktopCompanionDebug?.switchCharacterAndWait?.('mao_pro_zh')")
         page.wait_for_timeout(1800)
+        return
+
+    if name == "model-switch-showcase":
+        show_panel("model-panel")
+        page.wait_for_selector("#model-panel.visible", timeout=5000)
+        page.wait_for_timeout(1300)
+        page.evaluate("window.__desktopCompanionDebug?.switchCharacterAndWait?.('hiyori_pro_zh')")
+        page.wait_for_timeout(2600)
+        show_panel("model-panel")
+        page.wait_for_selector("#model-panel.visible", timeout=5000)
+        page.wait_for_timeout(1200)
+        page.evaluate("window.__desktopCompanionDebug?.switchCharacterAndWait?.('mao_pro_zh')")
+        page.wait_for_timeout(2800)
+        return
+
+    if name == "proactive-to-chat":
+        page.evaluate("window.__desktopCompanionDebug?.triggerProactiveBubble?.('care_followup', '你前面好像有点累，我有点惦记你。')")
+        page.wait_for_timeout(1800)
+        page.click('#reaction-bubble')
+        run_multi_turn_chat(
+            page,
+            [
+                ("我现在稍微好一点了。", 5200),
+                ("不过今天还是有点提不起劲。", 7000),
+            ],
+        )
         return
 
     raise ValueError(f"Unknown scenario: {name}")
@@ -338,7 +525,62 @@ def prepare_capture_scene(page) -> None:
         """
     )
     page.evaluate("window.__desktopCompanionDebug?.fitCurrentModelForPreview?.()")
+    page.evaluate("window.__desktopCompanionDebug?.setPromoCaptureMode?.(true)")
     page.wait_for_timeout(500)
+
+
+def style_chat_window_for_capture(page) -> None:
+    page.evaluate(
+        """
+        (() => {
+          const chat = document.getElementById('chat-window');
+          if (!chat) return;
+          Object.assign(chat.style, {
+            top: '24px',
+            left: '20px',
+            right: '20px',
+            bottom: 'auto',
+            width: 'auto',
+            height: '320px',
+            borderRadius: '24px',
+            boxShadow: '0 18px 44px rgba(31, 41, 55, 0.18)',
+            background: 'rgba(255,255,255,0.96)',
+            backdropFilter: 'blur(12px)',
+          });
+
+          const messages = chat.querySelector('.chat-messages');
+          if (messages instanceof HTMLElement) {
+            messages.style.padding = '14px 14px 8px';
+          }
+
+          const inputArea = chat.querySelector('.chat-input-area');
+          if (inputArea instanceof HTMLElement) {
+            inputArea.style.padding = '12px';
+          }
+        })()
+        """
+    )
+
+
+def send_chat_message(page, message: str, wait_ms: int = 7600) -> None:
+    page.evaluate(f"window.__desktopCompanionDebug?.sendChatMessage?.({json.dumps(message, ensure_ascii=False)})")
+    page.wait_for_timeout(wait_ms)
+
+
+def run_multi_turn_chat(page, messages: list[tuple[str, int]]) -> None:
+    page.evaluate(
+        """
+        (() => {
+          const chat = document.getElementById('chat-window');
+          chat?.classList.add('visible');
+        })()
+        """
+    )
+    page.wait_for_selector('#chat-window.visible', timeout=5000)
+    style_chat_window_for_capture(page)
+    page.wait_for_timeout(600)
+    for message, wait_ms in messages:
+        send_chat_message(page, message, wait_ms)
 
 
 def wait_for_canvas_content(page, timeout_ms: int = 10000) -> None:
@@ -392,12 +634,19 @@ def main() -> None:
         "greeting-bubble",
         "open-settings",
         "open-model-panel",
+        "desktop-chat-flow",
+        "settings-live-adjust",
+        "model-switch-showcase",
+        "proactive-to-chat",
         "click-face",
         "click-belly",
         "click-legs",
         "chat-reply",
         "weather-care",
         "memory-chat",
+        "study-support",
+        "stress-support",
+        "gaming-companion",
     ]
 
     static_server = start_static_server()
