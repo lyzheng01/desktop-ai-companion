@@ -277,6 +277,37 @@ def _get_remote_asset_cover_dir() -> Path:
     return cover_dir
 
 
+def _get_remote_asset_custom_cover_dir() -> Path:
+    custom_cover_dir = _get_remote_asset_cover_dir() / "custom"
+    custom_cover_dir.mkdir(parents=True, exist_ok=True)
+    return custom_cover_dir
+
+
+def _get_remote_avatar_custom_cover_path(path: Path) -> Path | None:
+    if path.suffix.lower() != ".vrm":
+        return None
+    candidate_stems = [path.stem]
+    if "-" in path.stem:
+        normalized_stem = path.stem.rsplit("-", 1)[0].strip()
+        if normalized_stem and normalized_stem not in candidate_stems:
+            candidate_stems.append(normalized_stem)
+
+    custom_cover_dir = _get_remote_asset_custom_cover_dir()
+    for stem in candidate_stems:
+        custom_cover_path = custom_cover_dir / f"{stem}.png"
+        if custom_cover_path.exists():
+            return custom_cover_path
+    return None
+
+
+def _build_static_asset_url(path: Path) -> str:
+    try:
+        relative_path = path.relative_to(STATIC_ASSET_ROOT).as_posix()
+    except ValueError:
+        return ""
+    return f"/static-assets/{relative_path}"
+
+
 def _read_glb_json_and_binary_chunks(path: Path) -> tuple[dict, bytes] | tuple[None, None]:
     try:
         with path.open("rb") as handle:
@@ -415,6 +446,109 @@ def _select_vrm_fallback_image_index(document: dict) -> int | None:
     return None
 
 
+def _normalize_vrm_image_name(image_name: object) -> str:
+    return unicodedata.normalize("NFKC", str(image_name or "").strip()).casefold()
+
+
+def _score_vrm_fallback_image_name(image_name: str) -> int:
+    if not image_name:
+        return 0
+
+    face_keywords = (
+        "face",
+        "facial",
+        "portrait",
+        "\u8138",
+        "\u9854",
+        "\u9854\u9762",
+    )
+    expression_keywords = (
+        "expression",
+        "\u8868\u60c5",
+    )
+    hair_keywords = (
+        "hair",
+        "\u5934\u53d1",
+        "\u9aea",
+    )
+    exact_head_names = {
+        "head",
+        "\u5934",
+        "\u982d",
+    }
+
+    if any(keyword in image_name for keyword in face_keywords):
+        return 30
+    if any(keyword in image_name for keyword in expression_keywords):
+        return 20
+    if any(keyword in image_name for keyword in hair_keywords):
+        return 0
+    if image_name in exact_head_names:
+        return 10
+
+    ascii_parts = [part for part in re.split(r"[^a-z0-9]+", image_name) if part]
+    if "head" in ascii_parts:
+        return 10
+
+    return 0
+
+
+# Override the legacy selector above so mojibake keywords do not bias cover choice.
+def _select_vrm_fallback_image_index(document: dict) -> int | None:
+    images = document.get("images") or []
+    textures = document.get("textures") or []
+    materials = document.get("materials") or []
+
+    if not images or not textures:
+        return None
+
+    texture_usage: dict[int, int] = {}
+    for material in materials:
+        pbr = (material or {}).get("pbrMetallicRoughness") or {}
+        base_color_texture = pbr.get("baseColorTexture") or {}
+        texture_index = base_color_texture.get("index")
+        if not isinstance(texture_index, int):
+            continue
+        if texture_index < 0 or texture_index >= len(textures):
+            continue
+        texture_usage[texture_index] = texture_usage.get(texture_index, 0) + 1
+
+    image_usage: dict[int, int] = {}
+    for texture_index, usage_count in texture_usage.items():
+        image_index = (textures[texture_index] or {}).get("source")
+        if not isinstance(image_index, int) or image_index < 0 or image_index >= len(images):
+            continue
+        image_usage[image_index] = image_usage.get(image_index, 0) + usage_count
+
+    best_match_index: int | None = None
+    best_match_score: tuple[int, int, int] | None = None
+    for index, image_entry in enumerate(images):
+        image_name = _normalize_vrm_image_name((image_entry or {}).get("name"))
+        name_score = _score_vrm_fallback_image_name(image_name)
+        if name_score <= 0:
+            continue
+        candidate_score = (name_score, image_usage.get(index, 0), -index)
+        if best_match_score is None or candidate_score > best_match_score:
+            best_match_index = index
+            best_match_score = candidate_score
+
+    if best_match_index is not None:
+        return best_match_index
+
+    if texture_usage:
+        for texture_index, _ in sorted(texture_usage.items(), key=lambda item: (-item[1], item[0])):
+            image_index = (textures[texture_index] or {}).get("source")
+            if isinstance(image_index, int) and 0 <= image_index < len(images):
+                return image_index
+
+    for texture_entry in textures:
+        image_index = (texture_entry or {}).get("source")
+        if isinstance(image_index, int) and 0 <= image_index < len(images):
+            return image_index
+
+    return None
+
+
 def _extract_vrm_fallback_cover(path: Path, *, product_code: str, covers_dir: Path) -> Path | None:
     document, binary_chunk = _read_glb_json_and_binary_chunks(path)
     if not document or not binary_chunk:
@@ -457,17 +591,17 @@ def _ensure_remote_asset_cover(path: Path, *, product_code: str, kind: str) -> s
     if kind != "avatar" or path.suffix.lower() != ".vrm":
         return ""
 
+    custom_cover_path = _get_remote_avatar_custom_cover_path(path)
+    if custom_cover_path is not None:
+        return _build_static_asset_url(custom_cover_path)
+
     cover_path = _extract_vrm_embedded_cover(path, product_code=product_code, covers_dir=_get_remote_asset_cover_dir())
     if cover_path is None:
         cover_path = _extract_vrm_fallback_cover(path, product_code=product_code, covers_dir=_get_remote_asset_cover_dir())
     if cover_path is None:
         return ""
 
-    try:
-        relative_path = cover_path.relative_to(STATIC_ASSET_ROOT).as_posix()
-    except ValueError:
-        return ""
-    return f"/static-assets/{relative_path}"
+    return _build_static_asset_url(cover_path)
 
 
 def _resolve_remote_asset_display_name(kind: str, stem: str) -> str:
@@ -595,6 +729,13 @@ def _cached_remote_asset_products_need_rebuild(products: list[dict]) -> bool:
             if str(payload.get("title") or "") != expected_display_name:
                 return True
             cover_url = str(item.get("cover_url") or "").strip()
+            expected_custom_cover_path = _get_remote_avatar_custom_cover_path(source_path) if kind == "avatar" else None
+            expected_custom_cover_url = _build_static_asset_url(expected_custom_cover_path) if expected_custom_cover_path else ""
+            if expected_custom_cover_url:
+                if cover_url != expected_custom_cover_url:
+                    return True
+            elif "/covers/custom/" in cover_url:
+                return True
             if not cover_url:
                 return True
             cover_relative = cover_url.removeprefix("/static-assets/").strip("/")
