@@ -1295,15 +1295,15 @@ def acquire_remote_asset_for_user(
             "manifest": manifest,
         }
 
-    points_balance = deduct_points_for_asset_product(int(user_id), product_code)
     manifest = build_asset_download_manifest(product_code, public_base_url)
+    redemption = redeem_store_product(int(user_id), product_code)
     new_retry_token = sign_local_token(
         {"type": "remote_asset_retry", "user_id": int(user_id), "product_code": product_code},
         24 * 60 * 60,
     )
     retry_payload = verify_local_token(new_retry_token)
     return {
-        "points_balance": points_balance,
+        "points_balance": int(redemption["points_balance"]),
         "retry_token": new_retry_token,
         "retry_token_expires_at": datetime.fromtimestamp(int(retry_payload["exp"])),
         "manifest": manifest,
