@@ -35,7 +35,7 @@ STREAM_LLM_TIMEOUT = 300
 TTS_PROXY_TIMEOUT = 30
 DEFAULT_TTS_SERVER_BASE_URL = os.getenv("DESKTOP_AI_COMPANION_TTS_SERVER_URL", "").strip()
 
-from fastapi import FastAPI, HTTPException, Header, Request
+from fastapi import FastAPI, HTTPException, Header, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -2348,6 +2348,7 @@ async def acquire_asset_endpoint(
             int(user["id"]),
             payload.product_code,
             payload.retry_token,
+            get_public_base_url(request),
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -2482,10 +2483,18 @@ async def redeem_points_endpoint(payload: PointsRedeemRequest, authorization: st
 
 
 @app.get("/assets/download-manifest/{product_code}", response_model=AssetDownloadManifestResponse)
-async def get_download_manifest_endpoint(product_code: str, authorization: str | None = Header(default=None)):
+async def get_download_manifest_endpoint(
+    product_code: str,
+    request: Request,
+    authorization: str | None = Header(default=None),
+):
     user = get_current_user(authorization)
     try:
-        manifest = get_download_manifest_for_user_product(int(user["id"]), product_code)
+        manifest = get_download_manifest_for_user_product(
+            int(user["id"]),
+            product_code,
+            get_public_base_url(request),
+        )
     except PermissionError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error
     except ValueError as error:
@@ -2754,6 +2763,179 @@ async def chat_stream_passthrough(request: PassthroughChatRequest, authorization
         ),
         media_type="text/event-stream",
     )
+
+# Voice Gateway WebSocket endpoint
+import asyncio
+import struct
+
+@app.websocket("/voice/session")
+async def voice_session_websocket(websocket: WebSocket):
+    """
+    Voice session WebSocket gateway for realtime voice conversations.
+    Protocol: JSON messages with base64-encoded PCM audio chunks.
+    """
+    await websocket.accept()
+    print("[VoiceGateway] Client connected")
+    
+    session_active = False
+    audio_buffer = bytearray()
+    interruption_enabled = False
+    
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
+                await websocket.send_json({"type": "error", "code": "invalid_json", "message": "Invalid JSON"})
+                continue
+            
+            msg_type = message.get("type", "")
+            
+            if msg_type == "session.start":
+                session_active = True
+                interruption_enabled = message.get("interruption_enabled", False)
+                auth_token = message.get("auth_token", "")
+                print(f"[VoiceGateway] Session started, interruption={interruption_enabled}")
+                await websocket.send_json({"type": "status.update", "status": "Session ready"})
+                
+            elif msg_type == "audio.append":
+                if not session_active:
+                    await websocket.send_json({"type": "error", "code": "no_session", "message": "No active session"})
+                    continue
+                audio_b64 = message.get("audio_base64", "")
+                if audio_b64:
+                    try:
+                        audio_chunk = base64.b64decode(audio_b64)
+                        audio_buffer.extend(audio_chunk)
+                    except Exception as e:
+                        print(f"[VoiceGateway] Audio decode error: {e}")
+                
+            elif msg_type == "audio.commit":
+                if not session_active:
+                    await websocket.send_json({"type": "error", "code": "no_session", "message": "No active session"})
+                    continue
+                
+                print(f"[VoiceGateway] Audio committed, buffer size={len(audio_buffer)} bytes")
+                
+                # Send status update
+                await websocket.send_json({"type": "status.update", "status": "Processing audio..."})
+                
+                # For now, simulate STT by sending a placeholder transcript
+                # In production, integrate with Whisper or similar STT service
+                if len(audio_buffer) > 0:
+                    # Send partial transcript
+                    await websocket.send_json({"type": "transcript.partial", "text": "..."})
+                    
+                    # Simulate final transcript (in production, use actual STT)
+                    # For demo, we'll use a simple echo
+                    user_text = "[Voice input received]"
+                    await websocket.send_json({"type": "transcript.final", "text": user_text})
+                    
+                    # Get LLM response
+                    await websocket.send_json({"type": "status.update", "status": "Thinking..."})
+                    
+                    try:
+                        current = get_config()
+                        api_key, base_url, model = resolve_llm_settings(current)
+                        
+                        # Build context for LLM
+                        system_prompt = "You are a friendly AI companion. Respond in a warm, casual tone."
+                        
+                        # Call LLM for response
+                        async with httpx.AsyncClient(timeout=60) as llm_client:
+                            response = await llm_client.post(
+                                f"{base_url}/chat/completions",
+                                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                                json={
+                                    "model": model,
+                                    "messages": [
+                                        {"role": "system", "content": system_prompt},
+                                        {"role": "user", "content": user_text}
+                                    ],
+                                    "stream": False
+                                }
+                            )
+                            
+                            if response.status_code == 200:
+                                result = response.json()
+                                assistant_text = result.get("choices", [{}])[0].get("message", {}).get("content", "I received your voice message.")
+                            else:
+                                assistant_text = "Sorry, I couldn't process your voice message right now."
+                    except Exception as e:
+                        print(f"[VoiceGateway] LLM error: {e}")
+                        assistant_text = "I'm having trouble connecting to the AI service."
+                    
+                    # Send assistant text
+                    await websocket.send_json({"type": "assistant.text.delta", "text": assistant_text})
+                    
+                    # Get TTS audio
+                    await websocket.send_json({"type": "status.update", "status": "Generating speech..."})
+                    
+                    try:
+                        tts_base_url = get_tts_server_base_url()
+                        if tts_base_url:
+                            async with httpx.AsyncClient(timeout=30) as tts_client:
+                                tts_response = await tts_client.post(
+                                    f"{tts_base_url}/synthesize",
+                                    json={"text": assistant_text, "voice": "warm-female", "format": "pcm"}
+                                )
+                                if tts_response.status_code == 200:
+                                    tts_data = tts_response.json()
+                                    audio_url = tts_data.get("audio_url")
+                                    if audio_url:
+                                        # Fetch and send audio chunks
+                                        async with httpx.AsyncClient() as audio_client:
+                                            audio_resp = await audio_client.get(audio_url)
+                                            if audio_resp.status_code == 200:
+                                                # Send audio in chunks
+                                                chunk_size = 4096
+                                                audio_bytes = audio_resp.content
+                                                for i in range(0, len(audio_bytes), chunk_size):
+                                                    chunk = audio_bytes[i:i+chunk_size]
+                                                    await websocket.send_json({
+                                                        "type": "assistant.audio.chunk",
+                                                        "audio_base64": base64.b64encode(chunk).decode()
+                                                    })
+                    except Exception as e:
+                        print(f"[VoiceGateway] TTS error: {e}")
+                    
+                    # Send done signal
+                    await websocket.send_json({"type": "assistant.done"})
+                    
+                    audio_buffer = bytearray()
+                else:
+                    await websocket.send_json({"type": "error", "code": "empty_audio", "message": "No audio data received"})
+                
+            elif msg_type == "interrupt.request":
+                if interruption_enabled:
+                    await websocket.send_json({"type": "status.update", "status": "Interrupted, listening..."})
+                    audio_buffer = bytearray()
+                else:
+                    await websocket.send_json({"type": "status.update", "status": "Interruption not enabled"})
+                
+            elif msg_type == "session.stop":
+                session_active = False
+                audio_buffer = bytearray()
+                await websocket.send_json({"type": "status.update", "status": "Session ended"})
+                print("[VoiceGateway] Session stopped")
+                break
+            
+            else:
+                await websocket.send_json({"type": "error", "code": "unknown_type", "message": f"Unknown message type: {msg_type}"})
+    
+    except WebSocketDisconnect:
+        print("[VoiceGateway] Client disconnected")
+    except Exception as e:
+        print(f"[VoiceGateway] Error: {e}")
+        try:
+            await websocket.send_json({"type": "error", "code": "server_error", "message": str(e)})
+        except:
+            pass
+    finally:
+        session_active = False
+        audio_buffer = bytearray()
+
 
 @app.get("/config", response_model=Config, response_model_exclude={"api_key"})
 async def get_config_endpoint():
